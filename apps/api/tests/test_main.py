@@ -424,6 +424,285 @@ class RepositorySearchAPITests(unittest.TestCase):
         )
 
 
+    def test_patch_proposal_is_read_only(self):
+        root = Path(self.temp.name) / "patch-source"
+        source_file = root / "src" / "example.ts"
+        source_file.parent.mkdir(parents=True)
+
+        original = b'export const message = "hello";\n'
+        source_file.write_bytes(original)
+
+        digest = hashlib.sha256(original).hexdigest()
+
+        self.store.replace_snapshot(
+            "demo-repo",
+            [
+                IndexedFile(
+                    path="src/example.ts",
+                    sha256=digest,
+                    size_bytes=len(original),
+                ),
+            ],
+        )
+
+        app.dependency_overrides[get_repository_root] = (
+            lambda: root
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/example.ts",
+                "old_text": '"hello"',
+                "new_text": '"hello world"',
+                "expected_sha256": digest,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertTrue(data["changed"])
+        self.assertFalse(data["applied"])
+        self.assertIn(
+            '+export const message = "hello world";',
+            data["unified_diff"],
+        )
+
+        # The source must remain byte-for-byte unchanged.
+        self.assertEqual(
+            source_file.read_bytes(),
+            original,
+        )
+
+    def test_patch_proposal_rejects_stale_source(self):
+        root = Path(self.temp.name) / "patch-source"
+        source_file = root / "src" / "example.ts"
+        source_file.parent.mkdir(parents=True)
+
+        original = b'export const message = "hello";\n'
+        current = b'export const message = "changed";\n'
+
+        source_file.write_bytes(current)
+
+        digest = hashlib.sha256(original).hexdigest()
+
+        self.store.replace_snapshot(
+            "demo-repo",
+            [
+                IndexedFile(
+                    path="src/example.ts",
+                    sha256=digest,
+                    size_bytes=len(original),
+                ),
+            ],
+        )
+
+        app.dependency_overrides[get_repository_root] = (
+            lambda: root
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/example.ts",
+                "old_text": '"hello"',
+                "new_text": '"hello world"',
+                "expected_sha256": digest,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            source_file.read_bytes(),
+            current,
+        )
+
+    def test_unauthorized_patch_skips_store_read(self):
+        with patch.object(
+            self.store,
+            "list_files",
+        ) as read_files:
+            response = self.client.post(
+                "/repos/demo-repo/patch-proposals",
+                headers={"X-Demo-User": "other-user"},
+                json={
+                    "path": "src/example.ts",
+                    "old_text": "hello",
+                    "new_text": "world",
+                    "expected_sha256": "a" * 64,
+                },
+            )
+
+        self.assertEqual(response.status_code, 403)
+        read_files.assert_not_called()
+
+    def test_patch_proposal_rejects_unindexed_path(self):
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/not-indexed.ts",
+                "old_text": "hello",
+                "new_text": "world",
+                "expected_sha256": "a" * 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+
+    def test_patch_proposal_rejects_missing_source(self):
+        root = Path(self.temp.name) / "missing-source"
+        root.mkdir()
+
+        app.dependency_overrides[get_repository_root] = (
+            lambda: root
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/app/layout.tsx",
+                "old_text": "RootLayout",
+                "new_text": "NewLayout",
+                "expected_sha256": "a" * 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json()["detail"],
+            "Indexed source file is missing",
+        )
+
+    def test_patch_proposal_rejects_unconfigured_root(self):
+        app.dependency_overrides[get_repository_root] = (
+            lambda: None
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/app/layout.tsx",
+                "old_text": "RootLayout",
+                "new_text": "NewLayout",
+                "expected_sha256": "a" * 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_patch_proposal_rejects_missing_target(self):
+        root = Path(self.temp.name) / "valid-source"
+        source_file = root / "src" / "example.ts"
+        source_file.parent.mkdir(parents=True)
+
+        original = b'export const message = "hello";\n'
+        source_file.write_bytes(original)
+        digest = hashlib.sha256(original).hexdigest()
+
+        self.store.replace_snapshot(
+            "demo-repo",
+            [
+                IndexedFile(
+                    path="src/example.ts",
+                    sha256=digest,
+                    size_bytes=len(original),
+                ),
+            ],
+        )
+
+        app.dependency_overrides[get_repository_root] = (
+            lambda: root
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/example.ts",
+                "old_text": "doesNotExist",
+                "new_text": "replacement",
+                "expected_sha256": digest,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            source_file.read_bytes(),
+            original,
+        )
+
+    def test_patch_proposal_rejects_invalid_digest(self):
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "src/app/layout.tsx",
+                "old_text": "RootLayout",
+                "new_text": "NewLayout",
+                "expected_sha256": "not-a-valid-sha256",
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+
+    def test_patch_proposal_rejects_symlink_source(self):
+        root = Path(self.temp.name) / "symlink-patch"
+        root.mkdir()
+
+        actual = root / "actual.ts"
+        original = b'export const message = "hello";\n'
+        actual.write_bytes(original)
+
+        link = root / "linked.ts"
+
+        try:
+            link.symlink_to(actual)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(
+                f"Symlink creation unavailable: {error}"
+            )
+
+        digest = hashlib.sha256(original).hexdigest()
+
+        self.store.replace_snapshot(
+            "demo-repo",
+            [
+                IndexedFile(
+                    path="linked.ts",
+                    sha256=digest,
+                    size_bytes=len(original),
+                ),
+            ],
+        )
+
+        app.dependency_overrides[get_repository_root] = (
+            lambda: root
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/patch-proposals",
+            headers={"X-Demo-User": "demo-user"},
+            json={
+                "path": "linked.ts",
+                "old_text": '"hello"',
+                "new_text": '"modified"',
+                "expected_sha256": digest,
+            },
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            actual.read_bytes(),
+            original,
+        )
 
 
 if __name__ == "__main__":
