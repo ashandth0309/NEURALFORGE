@@ -5,6 +5,11 @@ import tempfile
 import unittest
 
 import subprocess
+
+import os
+import subprocess
+from unittest.mock import patch
+
 from unittest.mock import patch
 
 from pathlib import Path
@@ -272,6 +277,53 @@ class GitPatchValidationTests(unittest.TestCase):
         self.assertEqual(mocked.call_count, 2)
 
 
+
+    def test_git_subprocess_ignores_inherited_git_settings(self):
+        successful = subprocess.CompletedProcess(
+            args=["git"],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        )
+
+        inherited = {
+            "GIT_DIR": "C:\\outside-repository",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.autocrlf",
+            "GIT_CONFIG_VALUE_0": "true",
+        }
+
+        with patch.dict(os.environ, inherited):
+            with patch(
+                "services.validator.git_patch.subprocess.run",
+                return_value=successful,
+            ) as mocked:
+                result = self.verify()
+
+        # Mocked Git never applies the patch.
+        self.assertFalse(result.passed)
+        self.assertEqual(mocked.call_count, 3)
+
+        for call in mocked.call_args_list:
+            environment = call.kwargs["env"]
+
+            self.assertNotIn("GIT_DIR", environment)
+            self.assertNotIn("GIT_CONFIG_COUNT", environment)
+            self.assertNotIn("GIT_CONFIG_KEY_0", environment)
+            self.assertNotIn("GIT_CONFIG_VALUE_0", environment)
+
+            self.assertEqual(
+                environment["GIT_CONFIG_NOSYSTEM"],
+                "1",
+            )
+            self.assertEqual(
+                environment["GIT_CONFIG_GLOBAL"],
+                os.devnull,
+            )
+            self.assertEqual(
+                environment["GIT_TERMINAL_PROMPT"],
+                "0",
+            )
 
 if __name__ == "__main__":
     unittest.main()

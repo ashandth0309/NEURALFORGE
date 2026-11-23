@@ -2,6 +2,7 @@
 """Validate a canonical patch inside a disposable Git repository."""
 
 import hashlib
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -15,8 +16,37 @@ from services.validator.policy import (
 )
 
 
+def _git_environment() -> dict[str, str]:
+    """Remove inherited Git-specific environment overrides.
+
+    Disable system and global Git configuration and prevent
+    Git from prompting for interactive credentials.
+
+    This is defense in depth, not operating-system isolation.
+    """
+
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+
+    return environment
+
+
 @dataclass(frozen=True)
 class GitPatchResult:
+    """Immutable result of independent Git patch verification."""
+
     passed: bool
     reason: str
     actual_sha256: str | None
@@ -29,16 +59,26 @@ def verify_git_patch(
     new_text: str,
     proposal: dict,
 ) -> GitPatchResult:
-    """Apply a verified patch to a temporary copy, never the original."""
+    """Verify and apply a canonical patch to a disposable copy.
+
+    The original project repository is never used as the Git
+    working directory or as the patch destination.
+
+    Intended for trusted local validation only.
+    """
 
     def fail(reason: str) -> GitPatchResult:
-        return GitPatchResult(False, reason, None)
+        return GitPatchResult(
+            passed=False,
+            reason=reason,
+            actual_sha256=None,
+        )
 
     if not isinstance(plan, ValidationPlan):
         raise TypeError("Expected ValidationPlan")
 
-    # Revalidate: frozen dataclasses can still be constructed
-    # directly without going through the policy factory.
+    # Frozen dataclasses can be constructed directly.
+    # Revalidate the plan through the policy factory.
     try:
         create_validation_plan(
             repository_id=plan.repository_id,
@@ -56,6 +96,7 @@ def verify_git_patch(
     if len(original_content) > MAX_FILE_SIZE:
         return fail("size_limit_exceeded")
 
+    # Verify proposal consistency before invoking Git.
     consistency = verify_proposal_consistency(
         plan=plan,
         original_content=original_content,
@@ -67,10 +108,14 @@ def verify_git_patch(
     if not consistency.passed:
         return fail(consistency.reason)
 
+    # Git receives only a canonical proposal verified above.
     patch_bytes = proposal["unified_diff"].encode("utf-8")
 
     if len(patch_bytes) > 4 * MAX_FILE_SIZE:
         return fail("patch_size_limit_exceeded")
+
+    # Remove inherited Git configuration overrides.
+    git_environment = _git_environment()
 
     try:
         with tempfile.TemporaryDirectory(
@@ -78,15 +123,24 @@ def verify_git_patch(
         ) as temporary:
             root = Path(temporary)
 
+            # The source path has already passed validation.
+            # Reconstruct it only inside the temporary directory.
             target = root.joinpath(
                 *plan.source_path.split("/")
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
+
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
             target.write_bytes(original_content)
 
+            # Initialize a disposable Git repository.
             init_result = subprocess.run(
                 ["git", "init", "--quiet"],
                 cwd=root,
+                env=git_environment,
                 capture_output=True,
                 timeout=10,
                 check=False,
@@ -95,6 +149,7 @@ def verify_git_patch(
             if init_result.returncode != 0:
                 return fail("git_initialization_failed")
 
+            # Disable automatic line-ending conversion.
             command = [
                 "git",
                 "-c",
@@ -102,10 +157,12 @@ def verify_git_patch(
                 "apply",
             ]
 
+            # First confirm that Git accepts the patch.
             check_result = subprocess.run(
                 [*command, "--check", "-"],
                 input=patch_bytes,
                 cwd=root,
+                env=git_environment,
                 capture_output=True,
                 timeout=10,
                 check=False,
@@ -114,10 +171,12 @@ def verify_git_patch(
             if check_result.returncode != 0:
                 return fail("git_patch_check_failed")
 
+            # Apply only to the disposable copy.
             apply_result = subprocess.run(
                 [*command, "-"],
                 input=patch_bytes,
                 cwd=root,
+                env=git_environment,
                 capture_output=True,
                 timeout=10,
                 check=False,
@@ -126,25 +185,31 @@ def verify_git_patch(
             if apply_result.returncode != 0:
                 return fail("git_patch_apply_failed")
 
+            # Independently hash the resulting file bytes.
             actual = target.read_bytes()
-            actual_digest = hashlib.sha256(actual).hexdigest()
+
+            actual_digest = hashlib.sha256(
+                actual
+            ).hexdigest()
 
             if actual_digest != plan.proposed_sha256:
                 return GitPatchResult(
-                    False,
-                    "applied_digest_mismatch",
-                    actual_digest,
+                    passed=False,
+                    reason="applied_digest_mismatch",
+                    actual_sha256=actual_digest,
                 )
 
             return GitPatchResult(
-                True,
-                "verified",
-                actual_digest,
+                passed=True,
+                reason="verified",
+                actual_sha256=actual_digest,
             )
 
     except FileNotFoundError:
         return fail("git_unavailable")
+
     except subprocess.TimeoutExpired:
         return fail("git_timeout")
+
     except (OSError, RuntimeError):
         return fail("validation_unavailable")
