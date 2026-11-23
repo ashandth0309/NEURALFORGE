@@ -86,6 +86,19 @@ class DockerCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_docker_command(insecure)
 
+    def test_requires_builtin_seccomp_profile(self):
+        command = build_docker_command(self.policy)
+
+        options = [
+            command[index + 1]
+            for index, value in enumerate(command[:-1])
+            if value == "--security-opt"
+        ]
+
+        self.assertIn("seccomp=builtin", options)
+        self.assertIn("no-new-privileges=true", options)
+        self.assertNotIn("seccomp=unconfined", options)
+
 
 if __name__ == "__main__":
     unittest.main()

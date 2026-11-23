@@ -31,6 +31,8 @@ def build_docker_command(
         "ALL",
         "--security-opt",
         "no-new-privileges=true",
+        "--security-opt",
+        "seccomp=builtin",
         "--memory",
         f"{policy.memory_mb}m",
         "--memory-swap",
