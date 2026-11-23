@@ -14,10 +14,10 @@ def answer_symbol_question(
     files: list[IndexedFile],
     question: str,
 ) -> dict:
-    """Find indexed symbols explicitly mentioned in a question.
+    """Locate explicitly named symbols in an indexed snapshot.
 
-    This is not an LLM. It makes only location claims supported
-    by the stored symbol snapshot.
+    This is not an LLM. Evidence describes stored symbol
+    metadata, not necessarily the current filesystem state.
     """
 
     if not isinstance(question, str):
@@ -66,32 +66,41 @@ def answer_symbol_question(
         )
     )
 
-    matches = matches[:MAX_EVIDENCE_RESULTS]
+    total_matches = len(matches)
+    truncated = total_matches > MAX_EVIDENCE_RESULTS
+    evidence = matches[:MAX_EVIDENCE_RESULTS]
 
-    if not matches:
-        return {
-            "answer": (
-                "No explicitly named symbol in the question "
-                "was found in the indexed snapshot."
-            ),
-            "evidence": [],
-        }
+    if total_matches == 0:
+        answer = (
+            "No explicitly named symbol in the question "
+            "was found in the indexed snapshot."
+        )
 
-    if len(matches) == 1:
-        item = matches[0]
+    elif total_matches == 1:
+        item = evidence[0]
 
         answer = (
             f"Indexed symbol '{item['name']}' "
             f"({item['kind']}) is recorded at "
             f"{item['path']}:{item['line']}."
         )
+
+    elif truncated:
+        answer = (
+            f"Found {total_matches} matching indexed "
+            f"symbol locations. Showing the first "
+            f"{len(evidence)} evidence entries."
+        )
+
     else:
         answer = (
-            f"Found {len(matches)} matching indexed "
+            f"Found {total_matches} matching indexed "
             "symbol locations. See the evidence entries."
         )
 
     return {
         "answer": answer,
-        "evidence": matches,
+        "total_matches": total_matches,
+        "truncated": truncated,
+        "evidence": evidence,
     }

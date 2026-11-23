@@ -48,6 +48,10 @@ class EvidenceQuestionTests(unittest.TestCase):
             "a" * 64,
         )
 
+        self.assertEqual(result["total_matches"], 1)
+        self.assertFalse(result["truncated"])
+
+
     def test_case_insensitive_question(self):
         result = answer_symbol_question(
             self.files,
@@ -99,6 +103,99 @@ class EvidenceQuestionTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result["evidence"]), 2)
+
+
+    def test_empty_snapshot_returns_no_evidence(self):
+        result = answer_symbol_question(
+            [],
+            "Where is RootLayout?",
+        )
+
+        self.assertEqual(result["evidence"], [])
+        self.assertIn(
+            "No explicitly named symbol",
+            result["answer"],
+        )
+
+
+        self.assertEqual(result["total_matches"], 0)
+        self.assertFalse(result["truncated"])
+
+
+
+    def test_evidence_is_limited_to_ten_results(self):
+        files = [
+            IndexedFile(
+                path=f"src/module_{number:02d}.ts",
+                sha256="a" * 64,
+                size_bytes=50,
+                symbols=(
+                    IndexedSymbol(
+                        name="sharedFunction",
+                        kind="function",
+                        line=1,
+                    ),
+                ),
+            )
+            for number in range(15)
+        ]
+
+        result = answer_symbol_question(
+            files,
+            "Where is sharedFunction defined?",
+        )
+
+        self.assertEqual(
+            len(result["evidence"]),
+            10,
+        )
+
+        self.assertEqual(result["total_matches"], 15)
+        self.assertTrue(result["truncated"])
+        self.assertIn("Showing the first 10", result["answer"])
+
+
+    def test_evidence_order_is_deterministic(self):
+        first = IndexedFile(
+            path="src/z.ts",
+            sha256="a" * 64,
+            size_bytes=50,
+            symbols=(
+                IndexedSymbol(
+                    name="sharedFunction",
+                    kind="function",
+                    line=3,
+                ),
+            ),
+        )
+
+        second = IndexedFile(
+            path="src/a.ts",
+            sha256="b" * 64,
+            size_bytes=50,
+            symbols=(
+                IndexedSymbol(
+                    name="sharedFunction",
+                    kind="function",
+                    line=5,
+                ),
+            ),
+        )
+
+        result = answer_symbol_question(
+            [first, second],
+            "Where is sharedFunction?",
+        )
+
+        paths = [
+            item["path"]
+            for item in result["evidence"]
+        ]
+
+        self.assertEqual(
+            paths,
+            ["src/a.ts", "src/z.ts"],
+        )
 
 
 if __name__ == "__main__":

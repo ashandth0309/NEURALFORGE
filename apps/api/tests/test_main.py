@@ -169,6 +169,10 @@ class RepositorySearchAPITests(unittest.TestCase):
             "a" * 64,
         )
 
+        self.assertEqual(data["total_matches"], 1)
+        self.assertFalse(data["truncated"])
+
+
     def test_ask_rejects_missing_identity(self):
         response = self.client.post(
             "/repos/demo-repo/ask",

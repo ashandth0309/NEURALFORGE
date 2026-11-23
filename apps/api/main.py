@@ -50,11 +50,17 @@ class EvidenceItem(BaseModel):
     sha256: str
 
 
+
+
 class AskResponse(BaseModel):
     repository_id: str
     question: str
     answer: str
+    total_matches: int
+    truncated: bool
     evidence: list[EvidenceItem]
+
+
 
 
 # Development-only registry, NOT production authentication.
@@ -146,6 +152,7 @@ def get_symbols(
     "/repos/{repo_id}/ask",
     response_model=AskResponse,
 )
+
 def ask_repository(
     repo_id: str,
     request: AskRequest,
@@ -162,9 +169,13 @@ def ask_repository(
         request.question,
     )
 
+
+
     return AskResponse(
         repository_id=repo_id,
         question=request.question,
         answer=result["answer"],
+        total_matches=result["total_matches"],
+        truncated=result["truncated"],
         evidence=result["evidence"],
     )
