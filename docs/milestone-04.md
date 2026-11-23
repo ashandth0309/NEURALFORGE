@@ -189,6 +189,3 @@ A future implementation should require:
 Do not expose patch application to untrusted users
 
 without completing a separate security review.
-
-
-
