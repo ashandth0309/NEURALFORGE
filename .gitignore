@@ -15,3 +15,9 @@ venv/
 coverage/
 *.log
 /neuralforge-index.json
+
+
+# Local SQLite database
+/neuralforge-api.sqlite3
+/neuralforge-api.sqlite3-shm
+/neuralforge-api.sqlite3-wal
