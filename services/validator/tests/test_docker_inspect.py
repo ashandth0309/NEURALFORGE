@@ -266,6 +266,81 @@ class DockerInspectTests(unittest.TestCase):
                         self.approved,
                     )
 
+    def test_accepts_matching_expected_image_id(self):
+        expected_id = self.metadata["Id"]
+
+        with patch(
+            "services.validator.docker_inspect."
+            "resolve_docker_executable",
+            return_value=r"C:\Docker\docker.exe",
+        ):
+            with patch(
+                "services.validator.docker_inspect.subprocess.run",
+                return_value=self.successful_result(),
+            ) as mocked:
+                identity = inspect_approved_image(
+                    self.policy,
+                    self.approved,
+                    expected_image_id=expected_id,
+                )
+
+        self.assertEqual(identity.image_id, expected_id)
+
+        command = mocked.call_args.args[0]
+        self.assertEqual(command[-1], expected_id)
+        self.assertEqual(command[3:5], ["image", "inspect"])
+
+    def test_rejects_invalid_expected_image_id(self):
+        invalid_ids = [
+            "invalid",
+            "sha256:1234",
+            "b" * 64,
+            "sha256:" + "G" * 64,
+            "",
+        ]
+
+        with patch(
+            "services.validator.docker_inspect.subprocess.run"
+        ) as mocked:
+            for invalid_id in invalid_ids:
+                with self.subTest(image_id=invalid_id):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "Invalid expected image ID",
+                    ):
+                        inspect_approved_image(
+                            self.policy,
+                            self.approved,
+                            expected_image_id=invalid_id,
+                        )
+
+        mocked.assert_not_called()
+
+    def test_rejects_mismatched_expected_image_id(self):
+        expected_id = "sha256:" + "c" * 64
+
+        with patch(
+            "services.validator.docker_inspect."
+            "resolve_docker_executable",
+            return_value=r"C:\Docker\docker.exe",
+        ):
+            with patch(
+                "services.validator.docker_inspect.subprocess.run",
+                return_value=self.successful_result(),
+            ) as mocked:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Docker image ID mismatch",
+                ):
+                    inspect_approved_image(
+                        self.policy,
+                        self.approved,
+                        expected_image_id=expected_id,
+                    )
+
+        command = mocked.call_args.args[0]
+        self.assertEqual(command[-1], expected_id)
+
 
 
 if __name__ == "__main__":
