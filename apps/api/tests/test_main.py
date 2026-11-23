@@ -3,6 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest.mock import patch
+
+
 from fastapi.testclient import TestClient
 
 from apps.api.main import app, get_store
@@ -204,6 +207,83 @@ class RepositorySearchAPITests(unittest.TestCase):
             response.json()["evidence"],
             [],
         )
+
+
+    def test_ask_rejects_whitespace_question(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "   "},
+            headers={"X-Demo-User": "demo-user"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_ask_rejects_overlong_question(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "x" * 201},
+            headers={"X-Demo-User": "demo-user"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_ask_rejects_missing_question(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={},
+            headers={"X-Demo-User": "demo-user"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_ask_rejects_non_string_question(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": 123},
+            headers={"X-Demo-User": "demo-user"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+
+    def test_unauthorized_search_does_not_read_store(self):
+        with patch.object(
+            self.store,
+            "list_files",
+        ) as read_files:
+            response = self.client.get(
+                "/repos/demo-repo/symbols",
+                params={"q": "RootLayout"},
+                headers={"X-Demo-User": "other-user"},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        read_files.assert_not_called()
+
+    def test_unauthorized_ask_does_not_read_store(self):
+        with patch.object(
+            self.store,
+            "list_files",
+        ) as read_files:
+            response = self.client.post(
+                "/repos/demo-repo/ask",
+                json={"question": "Where is RootLayout?"},
+                headers={"X-Demo-User": "other-user"},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        read_files.assert_not_called()
+
+    def test_unknown_repository_does_not_read_store(self):
+        with patch.object(
+            self.store,
+            "list_files",
+        ) as read_files:
+            response = self.client.post(
+                "/repos/unknown/ask",
+                json={"question": "Where is RootLayout?"},
+                headers={"X-Demo-User": "demo-user"},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        read_files.assert_not_called()
+
 
 
 

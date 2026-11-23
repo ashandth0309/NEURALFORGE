@@ -33,8 +33,13 @@ class SearchResponse(BaseModel):
     results: list[SymbolResult]
 
 
+
 class AskRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=200)
+    question: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"(?s:.*\S.*)",
+    )
 
 
 class EvidenceItem(BaseModel):
