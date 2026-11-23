@@ -14,3 +14,4 @@ venv/
 # Generated files
 coverage/
 *.log
+/neuralforge-index.json
