@@ -4,6 +4,14 @@
 import json
 import subprocess
 import unittest
+
+
+import os
+
+from services.validator.docker_inspect import (
+    MAX_INSPECT_OUTPUT_BYTES,
+)
+
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -145,6 +153,119 @@ class DockerInspectTests(unittest.TestCase):
                         self.policy,
                         self.approved,
                     )
+
+
+    def test_reports_docker_inspection_timeout(self):
+        with patch(
+            "services.validator.docker_inspect."
+            "resolve_docker_executable",
+            return_value=r"C:\Docker\docker.exe",
+        ):
+            with patch(
+                "services.validator.docker_inspect.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(
+                    cmd=["docker", "image", "inspect"],
+                    timeout=10,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_inspection_timeout",
+                ):
+                    inspect_approved_image(
+                        self.policy,
+                        self.approved,
+                    )
+
+    def test_rejects_oversized_inspection_output(self):
+        oversized = subprocess.CompletedProcess(
+            args=["docker"],
+            returncode=0,
+            stdout=b"x" * (MAX_INSPECT_OUTPUT_BYTES + 1),
+            stderr=b"",
+        )
+
+        with patch(
+            "services.validator.docker_inspect."
+            "resolve_docker_executable",
+            return_value=r"C:\Docker\docker.exe",
+        ):
+            with patch(
+                "services.validator.docker_inspect.subprocess.run",
+                return_value=oversized,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_inspection_output_too_large",
+                ):
+                    inspect_approved_image(
+                        self.policy,
+                        self.approved,
+                    )
+
+    def test_removes_inherited_docker_overrides(self):
+        inherited = {
+            "DOCKER_HOST": "tcp://localhost:2375",
+            "DOCKER_CONTEXT": "untrusted-context",
+            "DOCKER_CONFIG": r"C:\untrusted-docker-config",
+        }
+
+        with patch.dict(os.environ, inherited):
+            with patch(
+                "services.validator.docker_inspect."
+                "resolve_docker_executable",
+                return_value=r"C:\Docker\docker.exe",
+            ):
+                with patch(
+                    "services.validator.docker_inspect.subprocess.run",
+                    return_value=self.successful_result(),
+                ) as mocked:
+                    inspect_approved_image(
+                        self.policy,
+                        self.approved,
+                    )
+
+        environment = mocked.call_args.kwargs["env"]
+
+        self.assertNotIn("DOCKER_HOST", environment)
+        self.assertNotIn("DOCKER_CONTEXT", environment)
+        self.assertNotIn("DOCKER_CONFIG", environment)
+
+        command = mocked.call_args.args[0]
+        self.assertEqual(
+            command[1:3],
+            ["--context", "desktop-linux"],
+        )
+
+    def test_rejects_wrong_image_architecture(self):
+        wrong_metadata = dict(self.metadata)
+        wrong_metadata["Architecture"] = "arm64"
+
+        result = subprocess.CompletedProcess(
+            args=["docker"],
+            returncode=0,
+            stdout=json.dumps(wrong_metadata).encode("utf-8"),
+            stderr=b"",
+        )
+
+        with patch(
+            "services.validator.docker_inspect."
+            "resolve_docker_executable",
+            return_value=r"C:\Docker\docker.exe",
+        ):
+            with patch(
+                "services.validator.docker_inspect.subprocess.run",
+                return_value=result,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Docker image must target amd64",
+                ):
+                    inspect_approved_image(
+                        self.policy,
+                        self.approved,
+                    )
+
 
 
 if __name__ == "__main__":
