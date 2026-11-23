@@ -3,6 +3,10 @@ import hashlib
 import shutil
 import tempfile
 import unittest
+
+import subprocess
+from unittest.mock import patch
+
 from pathlib import Path
 
 from services.patcher.proposal import propose_replacement
@@ -192,6 +196,81 @@ class GitPatchValidationTests(unittest.TestCase):
         )
 
         self.assertTrue(result.passed, result.reason)
+
+
+    def test_reports_missing_git(self):
+        with patch(
+            "services.validator.git_patch.subprocess.run",
+            side_effect=FileNotFoundError(),
+        ):
+            result = self.verify()
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "git_unavailable")
+        self.assertIsNone(result.actual_sha256)
+
+    def test_reports_git_timeout(self):
+        with patch(
+            "services.validator.git_patch.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["git", "init"],
+                timeout=10,
+            ),
+        ):
+            result = self.verify()
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "git_timeout")
+        self.assertIsNone(result.actual_sha256)
+
+    def test_reports_git_initialization_failure(self):
+        failed = subprocess.CompletedProcess(
+            args=["git", "init"],
+            returncode=1,
+            stdout=b"",
+            stderr=b"initialization failed",
+        )
+
+        with patch(
+            "services.validator.git_patch.subprocess.run",
+            return_value=failed,
+        ):
+            result = self.verify()
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "git_initialization_failed",
+        )
+
+    def test_reports_git_patch_check_failure(self):
+        successful = subprocess.CompletedProcess(
+            args=["git", "init"],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        )
+
+        failed = subprocess.CompletedProcess(
+            args=["git", "apply", "--check"],
+            returncode=1,
+            stdout=b"",
+            stderr=b"patch rejected",
+        )
+
+        with patch(
+            "services.validator.git_patch.subprocess.run",
+            side_effect=[successful, failed],
+        ) as mocked:
+            result = self.verify()
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "git_patch_check_failed",
+        )
+        self.assertEqual(mocked.call_count, 2)
+
 
 
 if __name__ == "__main__":
