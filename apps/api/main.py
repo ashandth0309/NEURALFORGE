@@ -11,6 +11,11 @@ from services.indexer.evidence import answer_symbol_question
 from services.indexer.retrieval import search_symbols
 from services.indexer.store import SQLiteIndexStore
 
+from typing import Literal
+
+from services.indexer.freshness import check_file_freshness
+
+
 
 app = FastAPI(
     title="NEURALFORGE API",
@@ -42,12 +47,21 @@ class AskRequest(BaseModel):
     )
 
 
+
 class EvidenceItem(BaseModel):
     path: str
     line: int
     name: str
     kind: str
     sha256: str
+    freshness: Literal[
+        "current",
+        "stale",
+        "missing",
+        "unavailable",
+        "not_verified",
+    ]
+
 
 
 
@@ -74,6 +88,19 @@ def get_store() -> SQLiteIndexStore:
     return SQLiteIndexStore(
         Path("neuralforge-api.sqlite3")
     )
+
+
+def get_repository_root(repo_id: str) -> Path | None:
+    """Resolve a server-configured, trusted development root."""
+
+    project_root = Path(__file__).resolve().parents[2]
+
+    roots = {
+        "demo-repo": project_root / "apps" / "web",
+    }
+
+    return roots.get(repo_id)
+
 
 
 def authorize_repository(
@@ -158,6 +185,9 @@ def ask_repository(
     request: AskRequest,
     x_demo_user: str | None = Header(default=None),
     store: SQLiteIndexStore = Depends(get_store),
+
+    repository_root: Path | None = Depends(get_repository_root),
+
 ):
     # Authorize before reading the repository snapshot.
     authorize_repository(repo_id, x_demo_user)
@@ -169,6 +199,34 @@ def ask_repository(
         request.question,
     )
 
+    files_by_path = {
+        item.path: item
+        for item in stored_files
+    }
+
+    evidence_with_freshness = []
+
+    for item in result["evidence"]:
+        indexed_file = files_by_path.get(item["path"])
+
+        if repository_root is None:
+            freshness = "not_verified"
+        elif indexed_file is None:
+            freshness = "unavailable"
+        else:
+            freshness = check_file_freshness(
+                repository_root,
+                indexed_file,
+            )
+
+        evidence_with_freshness.append(
+            {
+                **item,
+                "freshness": freshness,
+            }
+        )
+
+
 
 
     return AskResponse(
@@ -177,5 +235,5 @@ def ask_repository(
         answer=result["answer"],
         total_matches=result["total_matches"],
         truncated=result["truncated"],
-        evidence=result["evidence"],
+        evidence=evidence_with_freshness,
     )

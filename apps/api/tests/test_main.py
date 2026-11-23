@@ -1,8 +1,9 @@
 
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
-
+from apps.api.main import get_repository_root
 from unittest.mock import patch
 
 
@@ -14,6 +15,10 @@ from services.indexer.store import (
     IndexedSymbol,
     SQLiteIndexStore,
 )
+
+from unittest.mock import patch
+from apps.api.main import get_repository_root
+
 
 
 class RepositorySearchAPITests(unittest.TestCase):
@@ -287,6 +292,136 @@ class RepositorySearchAPITests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         read_files.assert_not_called()
+
+    def test_ask_reports_current_source(self):
+        with patch(
+            "apps.api.main.check_file_freshness",
+            return_value="current",
+        ) as checker:
+            response = self.client.post(
+                "/repos/demo-repo/ask",
+                json={"question": "Where is RootLayout?"},
+                headers={"X-Demo-User": "demo-user"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["evidence"][0]["freshness"],
+            "current",
+        )
+        checker.assert_called_once()
+
+    def test_ask_reports_stale_source(self):
+        with patch(
+            "apps.api.main.check_file_freshness",
+            return_value="stale",
+        ):
+            response = self.client.post(
+                "/repos/demo-repo/ask",
+                json={"question": "Where is RootLayout?"},
+                headers={"X-Demo-User": "demo-user"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["evidence"][0]["freshness"],
+            "stale",
+        )
+
+    def test_ask_reports_not_verified_without_root(self):
+        app.dependency_overrides[get_repository_root] = (
+            lambda: None
+        )
+
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "Where is RootLayout?"},
+            headers={"X-Demo-User": "demo-user"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["evidence"][0]["freshness"],
+            "not_verified",
+        )
+
+    def test_unauthorized_ask_skips_freshness_check(self):
+        with patch(
+            "apps.api.main.check_file_freshness",
+        ) as checker:
+            response = self.client.post(
+                "/repos/demo-repo/ask",
+                json={"question": "Where is RootLayout?"},
+                headers={"X-Demo-User": "other-user"},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        checker.assert_not_called()
+
+
+    def test_ask_detects_actual_source_change(self):
+        root = Path(self.temp.name) / "source"
+        source = root / "src" / "app" / "layout.tsx"
+        source.parent.mkdir(parents=True)
+
+        original = b"export function RootLayout() {}"
+        source.write_bytes(original)
+
+        self.store.replace_snapshot(
+            "demo-repo",
+            [
+                IndexedFile(
+                    path="src/app/layout.tsx",
+                    sha256=hashlib.sha256(original).hexdigest(),
+                    size_bytes=len(original),
+                    symbols=(
+                        IndexedSymbol(
+                            name="RootLayout",
+                            kind="function",
+                            line=1,
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+        app.dependency_overrides[get_repository_root] = (
+            lambda: root
+        )
+
+        def ask():
+            return self.client.post(
+                "/repos/demo-repo/ask",
+                json={"question": "Where is RootLayout?"},
+                headers={"X-Demo-User": "demo-user"},
+            )
+
+        current = ask()
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(
+            current.json()["evidence"][0]["freshness"],
+            "current",
+        )
+
+        source.write_bytes(
+            b"export function RootLayout() { return 2; }"
+        )
+
+        stale = ask()
+        self.assertEqual(stale.status_code, 200)
+        self.assertEqual(
+            stale.json()["evidence"][0]["freshness"],
+            "stale",
+        )
+
+        source.unlink()
+
+        missing = ask()
+        self.assertEqual(missing.status_code, 200)
+        self.assertEqual(
+            missing.json()["evidence"][0]["freshness"],
+            "missing",
+        )
 
 
 
