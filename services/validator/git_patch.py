@@ -3,6 +3,9 @@
 
 import hashlib
 import os
+
+import sys
+
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -50,6 +53,48 @@ class GitPatchResult:
     passed: bool
     reason: str
     actual_sha256: str | None
+
+
+def _resolve_git_executable() -> str | None:
+    """Resolve a configured, absolute Git executable path.
+
+    Never search PATH to locate a Git executable.
+    This checks location, not binary authenticity.
+    """
+
+    configured = os.environ.get(
+        "NEURALFORGE_GIT_EXECUTABLE"
+    )
+
+    if configured is not None:
+        if not configured.strip():
+            return None
+
+        candidate = Path(configured)
+    elif sys.platform == "win32":
+        candidate = Path(
+            r"C:\Program Files\Git\cmd\git.exe"
+        )
+    else:
+        candidate = Path("/usr/bin/git")
+
+    if not candidate.is_absolute():
+        return None
+
+    try:
+        if not candidate.is_file():
+            return None
+
+        resolved = candidate.resolve(strict=True)
+
+        if not resolved.is_file():
+            return None
+
+        return str(resolved)
+
+    except (OSError, RuntimeError, ValueError):
+        return None
+
 
 
 def verify_git_patch(
@@ -115,7 +160,14 @@ def verify_git_patch(
         return fail("patch_size_limit_exceeded")
 
     # Remove inherited Git configuration overrides.
+
+    git_executable = _resolve_git_executable()
+
+    if git_executable is None:
+        return fail("git_unavailable")
+
     git_environment = _git_environment()
+
 
     try:
         with tempfile.TemporaryDirectory(
@@ -138,7 +190,7 @@ def verify_git_patch(
 
             # Initialize a disposable Git repository.
             init_result = subprocess.run(
-                ["git", "init", "--quiet"],
+                [git_executable, "init", "--quiet"],
                 cwd=root,
                 env=git_environment,
                 capture_output=True,
@@ -151,7 +203,7 @@ def verify_git_patch(
 
             # Disable automatic line-ending conversion.
             command = [
-                "git",
+                git_executable,
                 "-c",
                 "core.autocrlf=false",
                 "apply",

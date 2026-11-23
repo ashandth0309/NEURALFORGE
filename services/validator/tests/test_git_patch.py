@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 from pathlib import Path
 
+from services.validator.git_patch import _resolve_git_executable
+
 from services.patcher.proposal import propose_replacement
 from services.validator.git_patch import verify_git_patch
 from services.validator.policy import (
@@ -324,6 +326,60 @@ class GitPatchValidationTests(unittest.TestCase):
                 environment["GIT_TERMINAL_PROMPT"],
                 "0",
             )
+
+    def test_resolves_explicit_git_executable(self):
+        import shutil
+
+        executable = shutil.which("git")
+        self.assertIsNotNone(executable)
+
+        with patch.dict(
+            os.environ,
+            {"NEURALFORGE_GIT_EXECUTABLE": executable},
+        ):
+            resolved = _resolve_git_executable()
+
+        self.assertIsNotNone(resolved)
+        self.assertTrue(Path(resolved).is_file())
+        self.assertTrue(Path(resolved).is_absolute())
+
+    def test_rejects_relative_git_executable(self):
+        with patch.dict(
+            os.environ,
+            {"NEURALFORGE_GIT_EXECUTABLE": "git.exe"},
+        ):
+            with patch(
+                "services.validator.git_patch.subprocess.run"
+            ) as mocked:
+                result = self.verify()
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "git_unavailable",
+        )
+        mocked.assert_not_called()
+
+    def test_rejects_missing_configured_executable(self):
+        with patch.dict(
+            os.environ,
+            {
+                "NEURALFORGE_GIT_EXECUTABLE":
+                    r"C:\nonexistent\git.exe"
+            },
+        ):
+            with patch(
+                "services.validator.git_patch.subprocess.run"
+            ) as mocked:
+                result = self.verify()
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "git_unavailable",
+        )
+        mocked.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
