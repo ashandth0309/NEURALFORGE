@@ -269,6 +269,3 @@ deprecation warning involving httpx. Tests pass, but
 the dependency compatibility should be reviewed before
 
 upgrading or replacing packages.
-
-
-
