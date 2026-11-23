@@ -1,19 +1,20 @@
 
-"""NEURALFORGE read-only repository search API."""
+"""NEURALFORGE read-only repository intelligence API."""
 
 from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from services.indexer.evidence import answer_symbol_question
 from services.indexer.retrieval import search_symbols
 from services.indexer.store import SQLiteIndexStore
 
 
 app = FastAPI(
     title="NEURALFORGE API",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -32,36 +33,44 @@ class SearchResponse(BaseModel):
     results: list[SymbolResult]
 
 
-# Development-only ownership registry.
-# This is NOT a production authentication system.
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=200)
+
+
+class EvidenceItem(BaseModel):
+    path: str
+    line: int
+    name: str
+    kind: str
+    sha256: str
+
+
+class AskResponse(BaseModel):
+    repository_id: str
+    question: str
+    answer: str
+    evidence: list[EvidenceItem]
+
+
+# Development-only registry, NOT production authentication.
 REPOSITORY_OWNERS = {
     "demo-repo": "demo-user",
 }
 
 
 def get_store() -> SQLiteIndexStore:
-    """Provide the local SQLite persistence adapter."""
+    """Provide the local SQLite snapshot store."""
     return SQLiteIndexStore(
         Path("neuralforge-api.sqlite3")
     )
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get(
-    "/repos/{repo_id}/symbols",
-    response_model=SearchResponse,
-)
-def get_symbols(
+def authorize_repository(
     repo_id: str,
-    q: str = Query(min_length=1, max_length=100),
-    limit: int = Query(default=20, ge=1, le=100),
-    x_demo_user: str | None = Header(default=None),
-    store: SQLiteIndexStore = Depends(get_store),
-):
+    x_demo_user: str | None,
+) -> None:
+    """Check demonstration ownership before retrieving data."""
+
     if not x_demo_user:
         raise HTTPException(
             status_code=401,
@@ -82,7 +91,25 @@ def get_symbols(
             detail="Repository access denied",
         )
 
-    # Read the persisted snapshot only after checking access.
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get(
+    "/repos/{repo_id}/symbols",
+    response_model=SearchResponse,
+)
+def get_symbols(
+    repo_id: str,
+    q: str = Query(min_length=1, max_length=100),
+    limit: int = Query(default=20, ge=1, le=100),
+    x_demo_user: str | None = Header(default=None),
+    store: SQLiteIndexStore = Depends(get_store),
+):
+    authorize_repository(repo_id, x_demo_user)
+
     stored_files = store.list_files(repo_id)
 
     indexed_files = [
@@ -107,4 +134,32 @@ def get_symbols(
         query=q,
         count=len(results),
         results=results,
+    )
+
+
+@app.post(
+    "/repos/{repo_id}/ask",
+    response_model=AskResponse,
+)
+def ask_repository(
+    repo_id: str,
+    request: AskRequest,
+    x_demo_user: str | None = Header(default=None),
+    store: SQLiteIndexStore = Depends(get_store),
+):
+    # Authorize before reading the repository snapshot.
+    authorize_repository(repo_id, x_demo_user)
+
+    stored_files = store.list_files(repo_id)
+
+    result = answer_symbol_question(
+        stored_files,
+        request.question,
+    )
+
+    return AskResponse(
+        repository_id=repo_id,
+        question=request.question,
+        answer=result["answer"],
+        evidence=result["evidence"],
     )

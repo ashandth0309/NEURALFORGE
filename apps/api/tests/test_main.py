@@ -140,5 +140,72 @@ class RepositorySearchAPITests(unittest.TestCase):
         )
 
 
+    def test_ask_returns_evidence(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "Where is RootLayout defined?"},
+            headers={"X-Demo-User": "demo-user"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+
+        self.assertEqual(data["repository_id"], "demo-repo")
+        self.assertEqual(len(data["evidence"]), 1)
+        self.assertEqual(
+            data["evidence"][0]["path"],
+            "src/app/layout.tsx",
+        )
+        self.assertEqual(
+            data["evidence"][0]["line"],
+            20,
+        )
+        self.assertEqual(
+            data["evidence"][0]["sha256"],
+            "a" * 64,
+        )
+
+    def test_ask_rejects_missing_identity(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "Where is RootLayout?"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_ask_rejects_wrong_owner(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "Where is RootLayout?"},
+            headers={"X-Demo-User": "other-user"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_ask_unknown_repository(self):
+        response = self.client.post(
+            "/repos/unknown/ask",
+            json={"question": "Where is RootLayout?"},
+            headers={"X-Demo-User": "demo-user"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_ask_unknown_symbol(self):
+        response = self.client.post(
+            "/repos/demo-repo/ask",
+            json={"question": "Where is MissingFunction?"},
+            headers={"X-Demo-User": "demo-user"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["evidence"],
+            [],
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()
