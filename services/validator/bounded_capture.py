@@ -152,27 +152,38 @@ def run_bounded(
         )
 
 
+
     finally:
-        # Cleanup has a separate, bounded grace period.
+        # Bound cleanup of the direct subprocess.
         cleanup_deadline = time.monotonic() + 0.5
+
+        cleanup_error = None
+        cleanup_failed = False
 
         if process.poll() is None:
             try:
                 process.kill()
             except ProcessLookupError:
                 pass
+            except OSError as exc:
+                cleanup_failed = True
+                cleanup_error = exc
 
         remaining = max(
             0.0,
             cleanup_deadline - time.monotonic(),
         )
 
-        cleanup_failed = False
-
         try:
             process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             cleanup_failed = True
+            if cleanup_error is None:
+                cleanup_error = exc
+        except OSError as exc:
+            cleanup_failed = True
+            if cleanup_error is None:
+                cleanup_error = exc
 
         remaining = max(
             0.0,
@@ -187,4 +198,4 @@ def run_bounded(
         if cleanup_failed:
             raise RuntimeError(
                 "subprocess_cleanup_failed"
-            )
+            ) from cleanup_error

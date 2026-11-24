@@ -310,6 +310,42 @@ class BoundedCaptureTests(unittest.TestCase):
         self.assertEqual(process.wait.call_count, 2)
 
 
+    def test_reports_failed_process_termination(self):
+        process = MagicMock()
+
+        # Reader reaches EOF, but the process is still alive.
+        process.stdout.read1.return_value = b""
+        process.poll.return_value = None
+
+        # Normal exit wait fails.
+        process.wait.side_effect = subprocess.TimeoutExpired(
+            cmd=["trusted-test-command"],
+            timeout=0.4,
+        )
+
+        # Operating system refuses to terminate the process.
+        process.kill.side_effect = OSError(
+            "Access denied"
+        )
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            return_value=process,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "subprocess_cleanup_failed",
+            ):
+                run_bounded(
+                    ["trusted-test-command"],
+                    env={},
+                    timeout_seconds=0.4,
+                    max_output_bytes=1024,
+                )
+
+        process.kill.assert_called_once()
+
 
 
 if __name__ == "__main__":
