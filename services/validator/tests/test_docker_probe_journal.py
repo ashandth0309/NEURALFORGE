@@ -157,33 +157,42 @@ class ProbeJournalTests(unittest.TestCase):
     def test_missing_record(self):
         self.assertIsNone(self.journal.get(self.name))
 
-def test_created_container_can_be_recorded_removed(self):
-    self.journal.prepare(self.name, self.image_id)
 
-    self.journal.advance(
-        self.name,
-        "prepared",
-        "create_requested",
-    )
+    def test_created_container_can_transition_directly_to_removed(self):
+        self.journal.prepare(
+            self.name,
+            self.image_id,
+        )
 
-    self.journal.advance(
-        self.name,
-        "create_requested",
-        "created",
-        container_id=self.container_id,
-    )
+        self.journal.advance(
+            self.name,
+            "prepared",
+            "create_requested",
+        )
 
-    self.journal.advance(
-        self.name,
-        "created",
-        "removed",
-    )
+        self.journal.advance(
+            self.name,
+            "create_requested",
+            "created",
+            container_id=self.container_id,
+        )
 
-    record = self.journal.get(self.name)
+        self.journal.advance(
+            self.name,
+            "created",
+            "removed",
+        )
 
-    self.assertEqual(record.phase, "removed")
-    self.assertEqual(record.container_id, self.container_id)
-    self.assertEqual(self.journal.unresolved(), [])
+        reopened = ProbeJournal(self.path)
+        record = reopened.get(self.name)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.phase, "removed")
+        self.assertEqual(
+            record.container_id,
+            self.container_id,
+        )
+        self.assertEqual(reopened.unresolved(), [])
 
 
     def test_created_container_can_transition_directly_to_removed(self):
