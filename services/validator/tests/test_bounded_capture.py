@@ -5,6 +5,7 @@ import os
 import sys
 import unittest
 import time
+import subprocess
 
 from unittest.mock import MagicMock, patch
 
@@ -228,6 +229,46 @@ class BoundedCaptureTests(unittest.TestCase):
 
         self.assertLessEqual(wait_timeout, 0.4 + 1e-9)
         self.assertGreaterEqual(wait_timeout, 0)
+
+
+    def test_cleanup_wait_is_bounded(self):
+        process = MagicMock()
+        process.stdout.read1.return_value = b""
+        process.poll.return_value = None
+
+        # Normal exit wait times out; cleanup then begins.
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(
+                cmd=["trusted-test-command"],
+                timeout=0.4,
+            ),
+            0,
+        ]
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            return_value=process,
+        ):
+            with self.assertRaises(BoundedProcessTimeout):
+                run_bounded(
+                    ["trusted-test-command"],
+                    env={},
+                    timeout_seconds=0.4,
+                    max_output_bytes=1024,
+                )
+
+        process.kill.assert_called_once()
+
+        # Cleanup must not start another two-second wait.
+        self.assertEqual(process.wait.call_count, 2)
+
+        cleanup_wait = process.wait.call_args_list[1]
+        cleanup_timeout = cleanup_wait.kwargs["timeout"]
+
+        self.assertLessEqual(cleanup_timeout, 0.5)
+        self.assertGreaterEqual(cleanup_timeout, 0)
+
 
 
 if __name__ == "__main__":

@@ -152,16 +152,33 @@ def run_bounded(
         )
 
     finally:
-        # Terminate the direct child if it is still running.
+        # Cleanup has a separate, explicitly limited grace period.
+        # This is not part of the normal execution deadline.
+        cleanup_deadline = time.monotonic() + 0.5
+
         if process.poll() is None:
-            process.kill()
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+
+        remaining = max(
+            0.0,
+            cleanup_deadline - time.monotonic(),
+        )
 
         try:
-            process.wait(timeout=2)
+            process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
+            # Fail closed: do not treat an unreaped child
+            # as successful process cleanup.
             pass
 
-        worker.join(timeout=1)
+        remaining = max(
+            0.0,
+            cleanup_deadline - time.monotonic(),
+        )
+        worker.join(timeout=remaining)
 
         if process.stdout is not None and not worker.is_alive():
             process.stdout.close()
