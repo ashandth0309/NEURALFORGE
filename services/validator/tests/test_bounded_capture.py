@@ -5,6 +5,8 @@ import os
 import sys
 import unittest
 
+from unittest.mock import patch
+
 from services.validator.bounded_capture import (
     BoundedOutputError,
     BoundedProcessTimeout,
@@ -84,6 +86,100 @@ class BoundedCaptureTests(unittest.TestCase):
                 [],
                 env=dict(os.environ),
             )
+
+
+    def test_discards_large_stderr_without_deadlock(self):
+        result = self.run_command(
+            "import sys; "
+            "sys.stderr.write('e' * 1000000); "
+            "sys.stdout.write('OK')",
+            timeout_seconds=5,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"OK")
+        self.assertEqual(result.stderr, b"")
+
+    def test_timeout_terminates_direct_child(self):
+        processes = []
+
+        original_popen = __import__(
+            "subprocess"
+        ).Popen
+
+        def tracked_popen(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            side_effect=tracked_popen,
+        ):
+            with self.assertRaises(
+                BoundedProcessTimeout
+            ):
+                self.run_command(
+                    "import time; time.sleep(10)",
+                    timeout_seconds=0.2,
+                )
+
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+
+    def test_rejects_oversized_output_and_cleans_up(self):
+        processes = []
+
+        original_popen = __import__(
+            "subprocess"
+        ).Popen
+
+        def tracked_popen(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            side_effect=tracked_popen,
+        ):
+            with self.assertRaises(
+                BoundedOutputError
+            ):
+                self.run_command(
+                    "import sys,time; "
+                    "sys.stdout.write('x'*100000); "
+                    "sys.stdout.flush(); "
+                    "time.sleep(10)",
+                    max_output_bytes=1024,
+                    timeout_seconds=5,
+                )
+
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+
+    def test_passes_explicit_environment(self):
+        environment = dict(os.environ)
+        environment["NEURALFORGE_CAPTURE_TEST"] = (
+            "environment_verified"
+        )
+
+        result = run_bounded(
+            self.command(
+                "import os; "
+                "print(os.environ.get("
+                "'NEURALFORGE_CAPTURE_TEST', 'missing'))"
+            ),
+            env=environment,
+        )
+
+        self.assertEqual(
+            result.stdout.strip(),
+            b"environment_verified",
+        )
+
 
 
 if __name__ == "__main__":
