@@ -4,9 +4,10 @@
 import json
 import subprocess
 import unittest
-
-
 import os
+from services.validator.bounded_capture import BoundedOutputError
+
+
 
 from services.validator.docker_inspect import (
     MAX_INSPECT_OUTPUT_BYTES,
@@ -50,7 +51,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value=r"C:\Docker\docker.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=self.successful_result(),
             ) as mocked:
                 identity = inspect_approved_image(
@@ -69,11 +70,11 @@ class DockerInspectTests(unittest.TestCase):
         ])
         self.assertEqual(args[3:5], ["image", "inspect"])
         self.assertEqual(args[-1], self.reference)
-        self.assertFalse(mocked.call_args.kwargs["check"])
+        self.assertEqual(mocked.call_args.kwargs["timeout_seconds"], 10)
 
     def test_rejects_unapproved_image_before_docker(self):
         with patch(
-            "services.validator.docker_inspect.subprocess.run"
+            "services.validator.docker_inspect.run_bounded"
         ) as mocked:
             with self.assertRaises(ValueError):
                 inspect_approved_image(
@@ -117,7 +118,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value="docker-test.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=failure,
             ):
                 with self.assertRaisesRegex(
@@ -142,7 +143,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value="docker-test.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=malformed,
             ):
                 with self.assertRaisesRegex(
@@ -162,7 +163,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value=r"C:\Docker\docker.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 side_effect=subprocess.TimeoutExpired(
                     cmd=["docker", "image", "inspect"],
                     timeout=10,
@@ -191,7 +192,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value=r"C:\Docker\docker.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=oversized,
             ):
                 with self.assertRaisesRegex(
@@ -217,7 +218,7 @@ class DockerInspectTests(unittest.TestCase):
                 return_value=r"C:\Docker\docker.exe",
             ):
                 with patch(
-                    "services.validator.docker_inspect.subprocess.run",
+                    "services.validator.docker_inspect.run_bounded",
                     return_value=self.successful_result(),
                 ) as mocked:
                     inspect_approved_image(
@@ -254,7 +255,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value=r"C:\Docker\docker.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=result,
             ):
                 with self.assertRaisesRegex(
@@ -275,7 +276,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value=r"C:\Docker\docker.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=self.successful_result(),
             ) as mocked:
                 identity = inspect_approved_image(
@@ -300,7 +301,7 @@ class DockerInspectTests(unittest.TestCase):
         ]
 
         with patch(
-            "services.validator.docker_inspect.subprocess.run"
+            "services.validator.docker_inspect.run_bounded"
         ) as mocked:
             for invalid_id in invalid_ids:
                 with self.subTest(image_id=invalid_id):
@@ -325,7 +326,7 @@ class DockerInspectTests(unittest.TestCase):
             return_value=r"C:\Docker\docker.exe",
         ):
             with patch(
-                "services.validator.docker_inspect.subprocess.run",
+                "services.validator.docker_inspect.run_bounded",
                 return_value=self.successful_result(),
             ) as mocked:
                 with self.assertRaisesRegex(
@@ -341,6 +342,27 @@ class DockerInspectTests(unittest.TestCase):
         command = mocked.call_args.args[0]
         self.assertEqual(command[-1], expected_id)
 
+
+    def test_rejects_bounded_capture_overflow(self):
+        with patch(
+            "services.validator.docker_inspect."
+            "resolve_docker_executable",
+            return_value=r"C:\Docker\docker.exe",
+        ):
+            with patch(
+                "services.validator.docker_inspect.run_bounded",
+                side_effect=BoundedOutputError(
+                    "subprocess_output_too_large"
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_inspection_output_too_large",
+                ):
+                    inspect_approved_image(
+                        self.policy,
+                        self.approved,
+                    )
 
 
 if __name__ == "__main__":
