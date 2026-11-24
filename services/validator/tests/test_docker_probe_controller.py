@@ -845,6 +845,159 @@ class DockerProbeControllerTests(unittest.TestCase):
                 1,
             )
 
+    def test_final_journal_write_failure_blocks_success(self):
+        """Docker cleanup can succeed while SQLite remains unresolved."""
+        import tempfile
+        from pathlib import Path
+        from services.validator.docker_probe_journal import ProbeJournal
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "probes.sqlite3"
+            journal = ProbeJournal(database)
+            journal.initialize()
+
+            original_advance = journal.advance
+
+            def controlled_advance(
+                name, expected_phase, next_phase, **kwargs
+            ):
+                if next_phase == "removed":
+                    raise OSError("Simulated final SQLite write failure")
+                return original_advance(
+                    name, expected_phase, next_phase, **kwargs
+                )
+
+            with patch(
+                "services.validator.docker_probe_controller."
+                "inspect_approved_image",
+                return_value=self.identity,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "resolve_docker_executable",
+                return_value=r"C:\Docker\docker.exe",
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "secrets.token_hex",
+                return_value="d" * 24,
+            ), patch.object(
+                journal,
+                "advance",
+                side_effect=controlled_advance,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "run_bounded",
+                side_effect=self.responses(),
+            ) as docker:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_probe_journal_unconfirmed",
+                ):
+                    run_fixed_docker_probe(
+                        self.policy,
+                        self.approved,
+                        self.image_id,
+                        journal=journal,
+                    )
+
+            # All six mocked Docker operations completed.
+            self.assertEqual(docker.call_count, 6)
+
+            # The SQLite record must NOT falsely claim removal.
+            reopened = ProbeJournal(database)
+            record = reopened.get(self.name)
+
+            self.assertIsNotNone(record)
+            self.assertEqual(record.phase, "started")
+            self.assertEqual(
+                record.container_id, self.container_id
+            )
+            self.assertEqual(len(reopened.unresolved()), 1)
+
+    def test_start_journal_failure_prevents_docker_start(self):
+        """The start request must be journaled before Docker start."""
+        import tempfile
+        from pathlib import Path
+        from services.validator.docker_probe_journal import ProbeJournal
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "probes.sqlite3"
+            journal = ProbeJournal(database)
+            journal.initialize()
+
+            original_advance = journal.advance
+
+            def controlled_advance(
+                name, expected_phase, next_phase, **kwargs
+            ):
+                if next_phase == "started":
+                    raise OSError("Simulated start journal write failure")
+                return original_advance(
+                    name, expected_phase, next_phase, **kwargs
+                )
+
+            # Create, inspect, remove, list.
+            # No Docker start or final inspection is expected.
+            responses = [
+                self.result(self.container_id.encode() + b"\n"),
+                self.result(json.dumps(self.metadata).encode()),
+                self.result(),
+                self.result(),
+            ]
+
+            with patch(
+                "services.validator.docker_probe_controller."
+                "inspect_approved_image",
+                return_value=self.identity,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "resolve_docker_executable",
+                return_value=r"C:\Docker\docker.exe",
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "secrets.token_hex",
+                return_value="d" * 24,
+            ), patch.object(
+                journal,
+                "advance",
+                side_effect=controlled_advance,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "run_bounded",
+                side_effect=responses,
+            ) as docker:
+                with self.assertRaisesRegex(
+                    OSError,
+                    "Simulated start journal write failure",
+                ):
+                    run_fixed_docker_probe(
+                        self.policy,
+                        self.approved,
+                        self.image_id,
+                        journal=journal,
+                    )
+
+            commands = [
+                call.args[0]
+                for call in docker.call_args_list
+            ]
+
+            self.assertEqual(len(commands), 4)
+            self.assertFalse(
+                any("start" in command for command in commands)
+            )
+            self.assertTrue(
+                any("rm" in command for command in commands)
+            )
+
+            # Cleanup succeeded, so the record can be removed,
+            # but the probe itself must still report failure.
+            reopened = ProbeJournal(database)
+            record = reopened.get(self.name)
+
+            self.assertIsNotNone(record)
+            self.assertEqual(record.phase, "removed")
+            self.assertEqual(reopened.unresolved(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
