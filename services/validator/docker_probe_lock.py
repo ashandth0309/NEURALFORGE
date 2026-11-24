@@ -11,9 +11,46 @@ protect against processes that ignore this lock.
 """
 
 import os
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 
+
+def _assert_lock_identity(lock_path: Path, handle) -> None:
+    """Check that the pathname refers to the opened lock file.
+
+    This is a point-in-time check. It is not a substitute
+    for OS-enforced handle or directory protection.
+    """
+
+    try:
+        if lock_path.is_symlink():
+            raise RuntimeError("docker_probe_lock_identity_changed")
+
+        is_junction = getattr(lock_path, "is_junction", None)
+
+        if callable(is_junction) and is_junction():
+            raise RuntimeError("docker_probe_lock_identity_changed")
+
+        opened = os.fstat(handle.fileno())
+        named = os.stat(lock_path, follow_symlinks=False)
+
+    except OSError as exc:
+        raise RuntimeError(
+            "docker_probe_lock_identity_unavailable"
+        ) from exc
+
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or not opened.st_ino
+        or not named.st_ino
+        or (opened.st_dev, opened.st_ino)
+        != (named.st_dev, named.st_ino)
+    ):
+        raise RuntimeError(
+            "docker_probe_lock_identity_changed"
+        )
 
 @contextmanager
 def exclusive_probe_lock(database_path):
@@ -65,6 +102,7 @@ def exclusive_probe_lock(database_path):
             acquired = True
 
             try:
+                _assert_lock_identity(lock_path, handle)
                 yield
             finally:
                 if acquired:
@@ -91,6 +129,7 @@ def exclusive_probe_lock(database_path):
             acquired = True
 
             try:
+                _assert_lock_identity(lock_path, handle)
                 yield
             finally:
                 if acquired:
