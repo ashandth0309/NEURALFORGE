@@ -78,7 +78,7 @@ def parse_runtime_probe(
         data.get("filesystem_write_error") == "EROFS"
     )
 
-    
+
     def strict_positive_integer(name):
         value = data.get(name)
 
