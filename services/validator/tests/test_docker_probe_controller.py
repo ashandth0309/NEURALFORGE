@@ -670,5 +670,181 @@ class DockerProbeControllerTests(unittest.TestCase):
                 1,
             )
 
+    def test_cleanup_failure_persists_unresolved_journal(self):
+        import tempfile
+        from pathlib import Path
+
+        from services.validator.docker_probe_journal import (
+            ProbeJournal,
+        )
+
+        responses = self.responses()
+
+        # Docker removal fails after the diagnostic.
+        responses[4] = self.result(returncode=1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "probes.sqlite3"
+
+            journal = ProbeJournal(database)
+            journal.initialize()
+
+            with patch(
+                "services.validator.docker_probe_controller."
+                "inspect_approved_image",
+                return_value=self.identity,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "resolve_docker_executable",
+                return_value=r"C:\Docker\docker.exe",
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "secrets.token_hex",
+                return_value="d" * 24,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "run_bounded",
+                side_effect=responses,
+            ) as docker:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_probe_cleanup_unconfirmed",
+                ):
+                    run_fixed_docker_probe(
+                        self.policy,
+                        self.approved,
+                        self.image_id,
+                        journal=journal,
+                    )
+
+            reopened = ProbeJournal(database)
+            record = reopened.get(self.name)
+
+            self.assertIsNotNone(record)
+            self.assertEqual(
+                record.phase,
+                "cleanup_unconfirmed",
+            )
+            self.assertEqual(
+                record.container_id,
+                self.container_id,
+            )
+            self.assertEqual(
+                len(reopened.unresolved()),
+                1,
+            )
+
+            commands = [
+                call.args[0]
+                for call in docker.call_args_list
+            ]
+
+            self.assertTrue(
+                any("rm" in command for command in commands)
+            )
+
+
+    def test_journal_failure_after_creation_prevents_start(self):
+        import tempfile
+        from pathlib import Path
+
+        from services.validator.docker_probe_journal import (
+            ProbeJournal,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "probes.sqlite3"
+
+            journal = ProbeJournal(database)
+            journal.initialize()
+
+            original_advance = journal.advance
+
+            def controlled_advance(
+                name,
+                expected_phase,
+                next_phase,
+                **kwargs,
+            ):
+                if next_phase == "created":
+                    raise OSError(
+                        "Simulated SQLite write failure"
+                    )
+
+                return original_advance(
+                    name,
+                    expected_phase,
+                    next_phase,
+                    **kwargs,
+                )
+
+            responses = [
+                self.result(
+                    self.container_id.encode() + b"\n"
+                ),
+            ]
+
+            with patch(
+                "services.validator.docker_probe_controller."
+                "inspect_approved_image",
+                return_value=self.identity,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "resolve_docker_executable",
+                return_value=r"C:\Docker\docker.exe",
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "secrets.token_hex",
+                return_value="d" * 24,
+            ), patch.object(
+                journal,
+                "advance",
+                side_effect=controlled_advance,
+            ), patch(
+                "services.validator.docker_probe_controller."
+                "run_bounded",
+                side_effect=responses,
+            ) as docker:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_probe_cleanup_unconfirmed",
+                ):
+                    run_fixed_docker_probe(
+                        self.policy,
+                        self.approved,
+                        self.image_id,
+                        journal=journal,
+                    )
+
+            commands = [
+                call.args[0]
+                for call in docker.call_args_list
+            ]
+
+            # Only Docker creation should have occurred.
+            # The controller must not start or delete
+            # a container whose ownership is unverified.
+            self.assertEqual(len(commands), 1)
+            self.assertIn("create", commands[0])
+
+            reopened = ProbeJournal(database)
+            record = reopened.get(self.name)
+
+            self.assertIsNotNone(record)
+            self.assertEqual(
+                record.phase,
+                "cleanup_unconfirmed",
+            )
+
+            # SQLite could not persist the returned ID.
+            # Recovery must reconcile by the saved name.
+            self.assertIsNone(record.container_id)
+
+            self.assertEqual(
+                len(reopened.unresolved()),
+                1,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

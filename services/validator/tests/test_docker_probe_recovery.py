@@ -181,7 +181,7 @@ class ProbeRecoveryTests(unittest.TestCase):
         self.assertEqual(assessments, [])
         discover.assert_not_called()
 
-    
+
     def test_rejects_excessive_recovery_records(self):
         self.journal.prepare(
             self.name,
