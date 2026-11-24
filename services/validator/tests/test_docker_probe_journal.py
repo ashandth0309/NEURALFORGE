@@ -239,6 +239,30 @@ class ProbeJournalTests(unittest.TestCase):
             self.assertEqual(record.container_id, container_id)
             self.assertEqual(reopened.unresolved(), [])
 
+    def test_missing_database_is_not_recreated_on_read(self):
+        missing = (
+            Path(self.directory.name) / "missing.sqlite3"
+        )
+
+        journal = ProbeJournal(missing)
+
+        with self.assertRaises(sqlite3.OperationalError):
+            journal.unresolved()
+
+        self.assertFalse(missing.exists())
+
+    def test_missing_database_is_not_recreated_on_write(self):
+        missing = (
+            Path(self.directory.name) / "missing.sqlite3"
+        )
+
+        journal = ProbeJournal(missing)
+
+        with self.assertRaises(sqlite3.OperationalError):
+            journal.prepare(self.name, self.image_id)
+
+        self.assertFalse(missing.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
