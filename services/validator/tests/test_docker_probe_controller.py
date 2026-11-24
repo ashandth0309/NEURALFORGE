@@ -1085,6 +1085,67 @@ class DockerProbeControllerTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record.phase, "prepared")
 
+    def test_create_timeout_blocks_subsequent_probe(self):
+        """A timed-out create must block the next probe."""
+        from services.validator.bounded_capture import (
+            BoundedProcessTimeout,
+        )
+
+        # Simulate Docker CLI timing out during create.
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "docker_probe_cleanup_unconfirmed",
+        ):
+            self.invoke_probe([
+                BoundedProcessTimeout("subprocess_timeout"),
+            ])
+
+        # The operation was requested, but its outcome
+        # cannot be established by this controller.
+        record = self.journal.get(self.name)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(
+            record.phase,
+            "cleanup_unconfirmed",
+        )
+        self.assertIsNone(record.container_id)
+
+        # Reopen SQLite to simulate a subsequent worker.
+        reopened = ProbeJournal(self.journal.path)
+        self.assertEqual(len(reopened.unresolved()), 1)
+
+        # A second attempt must stop before image inspection
+        # or any Docker CLI invocation.
+        with patch(
+            "services.validator.docker_probe_controller."
+            "inspect_approved_image",
+        ) as inspect_image, patch(
+            "services.validator.docker_probe_controller."
+            "run_bounded",
+        ) as docker:
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "docker_probe_recovery_required",
+            ):
+                run_fixed_docker_probe(
+                    self.policy,
+                    self.approved,
+                    self.image_id,
+                    journal=reopened,
+                )
+
+        inspect_image.assert_not_called()
+        docker.assert_not_called()
+
+        # The failed second attempt must preserve the
+        # unresolved record for recovery assessment.
+        self.assertEqual(
+            reopened.get(self.name).phase,
+            "cleanup_unconfirmed",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
