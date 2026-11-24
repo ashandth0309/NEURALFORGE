@@ -42,6 +42,9 @@ class DockerProbeControllerTests(unittest.TestCase):
                 "Running": False,
             },
             "Config": {
+                "Labels": {
+                    "com.neuralforge.probe.name": self.name,
+                },
                 "User": "10001:10001",
                 "Entrypoint": ["/usr/local/bin/node"],
                 "Cmd": ["-e", PROBE_SCRIPT],
@@ -112,7 +115,10 @@ class DockerProbeControllerTests(unittest.TestCase):
             self.result(),
         ]
 
+
     def invoke_probe(self, responses):
+        self.cli_calls = []
+
         with patch(
             "services.validator.docker_probe_controller."
             "inspect_approved_image",
@@ -137,8 +143,8 @@ class DockerProbeControllerTests(unittest.TestCase):
                     self.image_id,
                 )
                 return evidence, invoke.call_args_list
-            except Exception:
-                raise
+            finally:
+                self.cli_calls = list(invoke.call_args_list)
 
     def test_successful_probe(self):
         evidence, calls = self.invoke_probe(self.responses())
@@ -166,7 +172,7 @@ class DockerProbeControllerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "docker_probe_invalid_container_id",
+            "docker_probe_cleanup_unconfirmed",
         ):
             self.invoke_probe(responses)
 
@@ -280,18 +286,18 @@ class DockerProbeControllerTests(unittest.TestCase):
             self.invoke_probe(responses)
 
 
+
     def test_rejects_failed_container_creation(self):
         responses = [
             self.result(returncode=1),
-            self.result(),
-            self.result(),
         ]
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "docker_probe_create_failed",
+            "docker_probe_cleanup_unconfirmed",
         ):
             self.invoke_probe(responses)
+
 
     def test_attempts_cleanup_after_start_timeout(self):
         from services.validator.bounded_capture import (
@@ -351,6 +357,94 @@ class DockerProbeControllerTests(unittest.TestCase):
             "docker_probe_cleanup_unconfirmed",
         ):
             self.invoke_probe(responses)
+
+
+    def test_rejects_unverified_container_ownership(self):
+        wrong = copy.deepcopy(self.metadata)
+        wrong["Name"] = "/unrelated-container"
+
+        responses = [
+            self.result(self.container_id.encode()),
+            self.result(json.dumps(wrong).encode()),
+        ]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "docker_probe_cleanup_unconfirmed",
+        ):
+            self.invoke_probe(responses)
+
+    def test_never_removes_unverified_container(self):
+        wrong = copy.deepcopy(self.metadata)
+        wrong["Name"] = "/unrelated-container"
+
+        responses = [
+            self.result(self.container_id.encode()),
+            self.result(json.dumps(wrong).encode()),
+        ]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "docker_probe_cleanup_unconfirmed",
+        ):
+            self.invoke_probe(responses)
+
+        commands = [
+            call.args[0]
+            for call in self.cli_calls
+        ]
+
+        self.assertEqual(len(commands), 2)
+
+        self.assertTrue(
+            any("create" in command for command in commands)
+        )
+
+        self.assertTrue(
+            any("inspect" in command for command in commands)
+        )
+
+        self.assertFalse(
+            any("rm" in command for command in commands)
+        )
+
+        self.assertFalse(
+            any("start" in command for command in commands)
+        )
+
+    def test_never_starts_or_removes_wrong_label(self):
+        wrong = copy.deepcopy(self.metadata)
+
+        wrong["Config"]["Labels"] = {
+            "com.neuralforge.probe.name":
+                "neuralforge-probe-" + "e" * 24,
+        }
+
+        responses = [
+            self.result(self.container_id.encode()),
+            self.result(json.dumps(wrong).encode()),
+        ]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "docker_probe_cleanup_unconfirmed",
+        ):
+            self.invoke_probe(responses)
+
+        commands = [
+            call.args[0]
+            for call in self.cli_calls
+        ]
+
+        self.assertEqual(len(commands), 2)
+
+        self.assertFalse(
+            any("start" in command for command in commands)
+        )
+
+        self.assertFalse(
+            any("rm" in command for command in commands)
+        )
 
 
 if __name__ == "__main__":

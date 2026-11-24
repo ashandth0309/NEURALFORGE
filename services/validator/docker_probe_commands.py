@@ -15,6 +15,7 @@ from services.validator.isolation import (
 
 
 NAME_PATTERN = re.compile(r"neuralforge-probe-[0-9a-f]{24}")
+PROBE_LABEL_KEY = "com.neuralforge.probe.name"
 
 # Fixed diagnostic for the currently supported
 # Linux amd64 / cgroup v1 Node.js probe image.
@@ -125,6 +126,8 @@ def build_probe_commands(
         "private",
         "--name",
         container_name,
+        "--label",
+        f"{PROBE_LABEL_KEY}={container_name}",
         "--pull",
         "never",
         "--network",

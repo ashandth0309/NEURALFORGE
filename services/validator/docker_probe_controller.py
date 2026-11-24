@@ -24,6 +24,7 @@ from services.validator.docker_inspect import (
     inspect_approved_image,
 )
 from services.validator.docker_probe_commands import (
+    PROBE_LABEL_KEY,
     build_probe_commands,
 )
 from services.validator.docker_probe_identity import (
@@ -107,6 +108,7 @@ def run_fixed_docker_probe(
         return metadata
 
     container_id = None
+    ownership_verified = False
     create_attempted = False
     create_outcome_uncertain = False
 
@@ -158,9 +160,38 @@ def run_fixed_docker_probe(
 
         # Verify the stopped container's identity
         # and requested isolation configuration.
+
         metadata = inspect_metadata(inspect_id)
 
+        # Establish ownership before any automatic
+        # force-removal operation is permitted.
+
+        # Require the exact container ID, name,
+        # and ownership label before starting or
+        # force-removing this probe.
+        config = metadata.get("Config")
+
+        labels = (
+            config.get("Labels")
+            if isinstance(config, dict)
+            else None
+        )
+
+        if (
+            metadata.get("Id") != container_id
+            or metadata.get("Name") != "/" + name
+            or not isinstance(labels, dict)
+            or labels.get(PROBE_LABEL_KEY) != name
+        ):
+            raise RuntimeError(
+                "docker_probe_ownership_mismatch"
+            )
+
+        ownership_verified = True
+
+
         verify_probe_container(
+
             metadata,
             policy=policy,
             expected_image_id=identity.image_id,
@@ -211,16 +242,23 @@ def run_fixed_docker_probe(
 
         return evidence
 
+
     finally:
         if create_attempted:
-            # A failed create may have reached Docker.
-            # Fall back to the unique name when the
-            # container ID is unavailable.
-            target = container_id or name
+            # Never force-remove a container until both
+            # its exact ID and generated name are verified.
+            #
+            # If creation failed or inspection was unavailable,
+            # ownership remains uncertain. A separate recovery
+            # process must reconcile that container safely.
+            if not ownership_verified:
+                raise RuntimeError(
+                    "docker_probe_cleanup_unconfirmed"
+                )
 
             remove_command = (
                 *cleanup[:-1],
-                target,
+                container_id,
             )
 
             try:
@@ -231,14 +269,8 @@ def run_fixed_docker_probe(
                         "docker_probe_remove_failed"
                     )
 
-                # Confirm the container is not present
-                # in Docker's current container listing.
-                filter_value = (
-                    f"id={container_id}"
-                    if container_id is not None
-                    else f"name=^{name}$"
-                )
-
+                # Verify Docker responds successfully and
+                # does not list the exact container ID.
                 list_command = (
                     executable,
                     "--context",
@@ -247,7 +279,7 @@ def run_fixed_docker_probe(
                     "-a",
                     "--no-trunc",
                     "--filter",
-                    filter_value,
+                    f"id={container_id}",
                     "--format",
                     "{{.ID}}",
                 )
@@ -267,11 +299,8 @@ def run_fixed_docker_probe(
                     "docker_probe_cleanup_unconfirmed"
                 ) from exc
 
-            # Docker daemon operations may complete
-            # after the corresponding CLI times out.
-            # Cleanup attempts cannot eliminate that
-            # uncertainty in the current architecture.
-
+            # Do not report success after any ambiguous
+            # Docker creation outcome.
             if create_outcome_uncertain:
                 raise RuntimeError(
                     "docker_probe_cleanup_unconfirmed"
