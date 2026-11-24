@@ -269,6 +269,47 @@ class BoundedCaptureTests(unittest.TestCase):
         self.assertLessEqual(cleanup_timeout, 0.5)
         self.assertGreaterEqual(cleanup_timeout, 0)
 
+    def test_reports_unreaped_child_during_cleanup(self):
+        process = MagicMock()
+
+        # The reader reaches EOF.
+        process.stdout.read1.return_value = b""
+
+        # The process is still running when cleanup starts.
+        process.poll.return_value = None
+
+        # Both the normal wait and cleanup wait time out.
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(
+                cmd=["trusted-test-command"],
+                timeout=0.4,
+            ),
+            subprocess.TimeoutExpired(
+                cmd=["trusted-test-command"],
+                timeout=0.5,
+            ),
+        ]
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            return_value=process,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "subprocess_cleanup_failed",
+            ):
+                run_bounded(
+                    ["trusted-test-command"],
+                    env={},
+                    timeout_seconds=0.4,
+                    max_output_bytes=1024,
+                )
+
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_count, 2)
+
+
 
 
 if __name__ == "__main__":
