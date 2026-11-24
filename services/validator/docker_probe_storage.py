@@ -63,7 +63,7 @@ def open_persistent_probe_journal() -> ProbeJournal:
     if not local_appdata:
         raise RuntimeError("probe_storage_location_missing")
 
-    root = Path(local_appdata).absolute()
+    root = Path(local_appdata)
 
     if not root.is_absolute():
         raise RuntimeError("probe_storage_location_invalid")

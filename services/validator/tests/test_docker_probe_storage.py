@@ -93,6 +93,17 @@ class ProbeStorageTests(unittest.TestCase):
             ):
                 open_persistent_probe_journal()
 
+    def test_relative_localappdata_is_rejected(self):
+        with patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": "relative-storage"},
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "probe_storage_location_invalid",
+            ):
+                open_persistent_probe_journal()
+
 
 if __name__ == "__main__":
     unittest.main()
