@@ -12,7 +12,9 @@ import json
 import os
 import re
 import secrets
-
+from services.validator.docker_probe_lock import (
+    exclusive_probe_lock,
+)
 from services.validator.bounded_capture import (
     BoundedProcessTimeout,
     run_bounded,
@@ -41,7 +43,7 @@ CLI_TIMEOUT = 15
 CLI_OUTPUT_LIMIT = 65536
 
 
-def run_fixed_docker_probe(
+def _run_fixed_docker_probe_unlocked(
     policy: IsolationPolicy,
     approved_images: frozenset[str],
     expected_image_id: str,
@@ -421,3 +423,42 @@ def run_fixed_docker_probe(
                     raise RuntimeError(
                         "docker_probe_cleanup_unconfirmed"
                     )
+
+
+def run_fixed_docker_probe(
+    policy: IsolationPolicy,
+    approved_images: frozenset[str],
+    expected_image_id: str,
+    *,
+    journal: ProbeJournal | None = None,
+):
+    """Execute a fixed probe under an exclusive journal lock.
+
+    Refuse execution when recovery of an earlier probe
+    may be necessary. Hold the lock until cleanup and
+    final journal persistence have completed.
+    """
+
+    if not isinstance(journal, ProbeJournal):
+        raise RuntimeError(
+            "docker_probe_journal_required"
+        )
+
+    # The OS-backed lock must cover the preflight check,
+    # all Docker operations, and final journal updates.
+    with exclusive_probe_lock(journal.path):
+
+        # Also validates that the journal schema exists.
+        unresolved = journal.unresolved()
+
+        if unresolved:
+            raise RuntimeError(
+                "docker_probe_recovery_required"
+            )
+
+        return _run_fixed_docker_probe_unlocked(
+            policy,
+            approved_images,
+            expected_image_id,
+            journal=journal,
+        )

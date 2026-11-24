@@ -460,14 +460,11 @@ class DockerProbeControllerTests(unittest.TestCase):
         )
 
     def test_journal_failure_prevents_docker_creation(self):
-        from unittest.mock import Mock
-
-        journal = Mock()
-        journal.prepare.side_effect = OSError(
-            "SQLite write failed"
-        )
-
-        with patch(
+        with patch.object(
+            self.journal,
+            "prepare",
+            side_effect=OSError("SQLite write failed"),
+        ) as prepare, patch(
             "services.validator.docker_probe_controller."
             "inspect_approved_image",
             return_value=self.identity,
@@ -483,26 +480,23 @@ class DockerProbeControllerTests(unittest.TestCase):
             "services.validator.docker_probe_controller."
             "run_bounded",
         ) as docker:
-            with self.assertRaises(OSError):
+            with self.assertRaisesRegex(OSError, "SQLite write failed"):
                 run_fixed_docker_probe(
                     self.policy,
                     self.approved,
                     self.image_id,
-                    journal=journal,
+                    journal=self.journal,
                 )
 
+        prepare.assert_called_once_with(self.name, self.image_id)
         docker.assert_not_called()
 
-
     def test_journal_transition_failure_prevents_creation(self):
-        from unittest.mock import Mock
-
-        journal = Mock()
-        journal.advance.side_effect = OSError(
-            "SQLite transaction failed"
-        )
-
-        with patch(
+        with patch.object(
+            self.journal,
+            "advance",
+            side_effect=OSError("SQLite transaction failed"),
+        ) as advance, patch(
             "services.validator.docker_probe_controller."
             "inspect_approved_image",
             return_value=self.identity,
@@ -526,20 +520,15 @@ class DockerProbeControllerTests(unittest.TestCase):
                     self.policy,
                     self.approved,
                     self.image_id,
-                    journal=journal,
+                    journal=self.journal,
                 )
 
-        journal.prepare.assert_called_once_with(
-            self.name,
-            self.image_id,
-        )
-
-        journal.advance.assert_called_once_with(
+        advance.assert_called_once_with(
             self.name,
             "prepared",
             "create_requested",
         )
-
+        self.assertEqual(self.journal.get(self.name).phase, "prepared")
         docker.assert_not_called()
 
     def test_successful_probe_persists_removed_state(self):
@@ -1031,6 +1020,71 @@ class DockerProbeControllerTests(unittest.TestCase):
 
         inspect_image.assert_not_called()
         docker.assert_not_called()
+
+
+    def test_controller_refuses_when_lock_is_held(self):
+        from services.validator.docker_probe_lock import (
+            exclusive_probe_lock,
+        )
+
+        with patch(
+            "services.validator.docker_probe_controller."
+            "inspect_approved_image",
+        ) as inspect_image, patch(
+            "services.validator.docker_probe_controller."
+            "run_bounded",
+        ) as docker:
+
+            with exclusive_probe_lock(self.journal.path):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_probe_lock_unavailable",
+                ):
+                    run_fixed_docker_probe(
+                        self.policy,
+                        self.approved,
+                        self.image_id,
+                        journal=self.journal,
+                    )
+
+        inspect_image.assert_not_called()
+        docker.assert_not_called()
+
+    def test_controller_refuses_unresolved_journal(self):
+        self.journal.prepare(
+            self.name,
+            self.image_id,
+        )
+
+        with patch(
+            "services.validator.docker_probe_controller."
+            "inspect_approved_image",
+        ) as inspect_image, patch(
+            "services.validator.docker_probe_controller."
+            "run_bounded",
+        ) as docker:
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "docker_probe_recovery_required",
+            ):
+                run_fixed_docker_probe(
+                    self.policy,
+                    self.approved,
+                    self.image_id,
+                    journal=self.journal,
+                )
+
+        inspect_image.assert_not_called()
+        docker.assert_not_called()
+
+        # The preflight rejection must not change
+        # the unresolved record.
+        record = self.journal.get(self.name)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.phase, "prepared")
+
 
 if __name__ == "__main__":
     unittest.main()
