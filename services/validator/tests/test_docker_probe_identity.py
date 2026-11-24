@@ -42,6 +42,7 @@ class DockerProbeIdentityTests(unittest.TestCase):
                 "MemorySwap": 536870912,
                 "NanoCpus": 1000000000,
                 "PidsLimit": 64,
+                "CgroupnsMode": "private",
                 "Init": True,
                 "CapDrop": ["ALL"],
                 "SecurityOpt": [
@@ -164,6 +165,17 @@ class DockerProbeIdentityTests(unittest.TestCase):
             ValueError, "container_command_mismatch"
         ):
             self.verify(data)
+
+    def test_rejects_host_cgroup_namespace(self):
+        data = copy.deepcopy(self.metadata)
+        data["HostConfig"]["CgroupnsMode"] = "host"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "container_configuration_mismatch:CgroupnsMode",
+        ):
+            self.verify(data)
+
 
 
 if __name__ == "__main__":

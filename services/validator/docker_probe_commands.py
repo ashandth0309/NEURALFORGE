@@ -111,6 +111,7 @@ def build_probe_commands(
     ):
         raise ValueError("invalid_docker_executable")
 
+
     base = (
         executable,
         "--context",
@@ -120,6 +121,8 @@ def build_probe_commands(
     create = (
         *base,
         "create",
+        "--cgroupns",
+        "private",
         "--name",
         container_name,
         "--pull",
@@ -150,6 +153,7 @@ def build_probe_commands(
         "-e",
         PROBE_SCRIPT,
     )
+
 
     start = (
         *base,

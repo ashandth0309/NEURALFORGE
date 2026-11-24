@@ -91,6 +91,7 @@ def verify_probe_container(
         raise ValueError("container_command_mismatch")
 
     required_host_settings = {
+        "CgroupnsMode": "private",
         "NetworkMode": "none",
         "ReadonlyRootfs": True,
         "Privileged": False,

@@ -102,6 +102,11 @@ class DockerProbeCommandTests(unittest.TestCase):
         self.assertIn("seccomp=builtin", create)
         self.assertIn("no-new-privileges=true", create)
 
+        self.assertEqual(
+            create[create.index("--cgroupns") + 1],
+            "private",
+        )
+
     def test_start_and_cleanup_target_same_name(self):
         _, _, start, cleanup = self.build()
 
