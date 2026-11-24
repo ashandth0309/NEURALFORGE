@@ -165,7 +165,7 @@ def build_probe_commands(
         container_name,
     )
 
-    
+
     inspect = (
         *base,
         "inspect",
@@ -175,4 +175,3 @@ def build_probe_commands(
     )
 
     return create, inspect, start, cleanup
-
