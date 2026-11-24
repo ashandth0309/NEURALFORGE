@@ -220,6 +220,70 @@ class ProbeRecoveryTests(unittest.TestCase):
             max_records=1,
         )
 
+    def test_journal_survives_abrupt_process_exit(self):
+        """A killed worker must leave its durable intent visible."""
+        import subprocess
+        import sys
+
+        script = """
+import os
+import sys
+
+from services.validator.docker_probe_journal import ProbeJournal
+
+journal = ProbeJournal(sys.argv[1])
+name = sys.argv[2]
+image_id = sys.argv[3]
+
+journal.prepare(name, image_id)
+journal.advance(
+    name,
+    "prepared",
+    "create_requested",
+)
+
+os._exit(23)
+"""
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(self.journal.path),
+                self.name,
+                self.image_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        # Exit code 23 confirms the child reached
+        # the deliberate abrupt-termination point.
+        self.assertEqual(
+            result.returncode,
+            23,
+            msg=result.stderr,
+        )
+
+        # Reopen SQLite in the surviving process.
+        reopened = ProbeJournal(self.journal.path)
+        record = reopened.get(self.name)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(
+            record.phase,
+            "create_requested",
+        )
+        self.assertIsNone(record.container_id)
+
+        self.assertEqual(
+            len(reopened.unresolved()),
+            1,
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()
