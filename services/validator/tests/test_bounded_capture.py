@@ -346,6 +346,46 @@ class BoundedCaptureTests(unittest.TestCase):
 
         process.kill.assert_called_once()
 
+    def test_reports_reader_thread_alive_after_cleanup(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+
+        worker = MagicMock()
+
+        # The reader remains alive both after the normal
+        # join and after the cleanup grace period.
+        worker.is_alive.return_value = True
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            return_value=process,
+        ):
+            with patch(
+                "services.validator.bounded_capture."
+                "threading.Thread",
+                return_value=worker,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "subprocess_cleanup_failed",
+                ):
+                    run_bounded(
+                        ["trusted-test-command"],
+                        env={},
+                        timeout_seconds=0.4,
+                        max_output_bytes=1024,
+                    )
+
+        process.kill.assert_called_once()
+        worker.start.assert_called_once()
+        self.assertGreaterEqual(worker.join.call_count, 2)
+
+        # Never close a pipe while the reader is
+        # still known to be using it.
+        process.stdout.close.assert_not_called()
+
 
 
 if __name__ == "__main__":

@@ -190,9 +190,26 @@ def run_bounded(
             cleanup_deadline - time.monotonic(),
         )
 
+
         worker.join(timeout=remaining)
 
-        if process.stdout is not None and not worker.is_alive():
+        # A reader still alive after the cleanup grace
+        # period means subprocess cleanup is incomplete.
+        reader_still_alive = worker.is_alive()
+
+        if reader_still_alive:
+            cleanup_failed = True
+            if cleanup_error is None:
+                cleanup_error = RuntimeError(
+                    "subprocess_reader_still_alive"
+                )
+
+        # Never close stdout while the reader thread
+        # may still be accessing the pipe.
+        if (
+            process.stdout is not None
+            and not reader_still_alive
+        ):
             process.stdout.close()
 
         if cleanup_failed:
