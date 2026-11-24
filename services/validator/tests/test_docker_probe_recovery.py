@@ -283,6 +283,78 @@ os._exit(23)
             1,
         )
 
+    def test_late_container_appearance_remains_blocked(self):
+        """An earlier absence must not authorize another probe."""
+        from unittest.mock import patch
+
+        from services.validator.docker_probe_controller import (
+            run_fixed_docker_probe,
+        )
+        from services.validator.isolation import IsolationPolicy
+
+        self.journal.prepare(self.name, self.image_id)
+        self.journal.advance(
+            self.name,
+            "prepared",
+            "create_requested",
+        )
+
+        discover = Mock(
+            side_effect=[
+                ProbeDiscovery("absent_at_check"),
+                ProbeDiscovery("present_owned", self.container_id),
+            ]
+        )
+
+        policy = IsolationPolicy(
+            image="node@sha256:" + "a" * 64
+        )
+        approved = frozenset({policy.image})
+
+        statuses = []
+
+        for _ in range(2):
+            assessments = assess_unresolved_probes(
+                self.journal,
+                self.executable,
+                discover=discover,
+            )
+
+            self.assertEqual(len(assessments), 1)
+            statuses.append(assessments[0].discovery.status)
+
+            with patch(
+                "services.validator.docker_probe_controller."
+                "inspect_approved_image"
+            ) as inspect_image, patch(
+                "services.validator.docker_probe_controller."
+                "run_bounded"
+            ) as docker:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "docker_probe_recovery_required",
+                ):
+                    run_fixed_docker_probe(
+                        policy,
+                        approved,
+                        self.image_id,
+                        journal=self.journal,
+                    )
+
+                inspect_image.assert_not_called()
+                docker.assert_not_called()
+
+        self.assertEqual(
+            statuses,
+            ["absent_at_check", "present_owned"],
+        )
+        self.assertEqual(discover.call_count, 2)
+
+        record = self.journal.get(self.name)
+        self.assertEqual(record.phase, "create_requested")
+        self.assertIsNone(record.container_id)
+        self.assertEqual(len(self.journal.unresolved()), 1)
+
 
 
 if __name__ == "__main__":
