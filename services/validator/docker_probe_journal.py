@@ -37,7 +37,11 @@ TRANSITIONS = {
         "created",
         "cleanup_unconfirmed",
     },
-    "created": {"verified", "cleanup_unconfirmed"},
+"created": {
+    "verified",
+    "cleanup_unconfirmed",
+    "removed",
+},
     "verified": {"started", "cleanup_unconfirmed", "removed"},
     "started": {"cleanup_unconfirmed", "removed"},
     "cleanup_unconfirmed": {"removed"},

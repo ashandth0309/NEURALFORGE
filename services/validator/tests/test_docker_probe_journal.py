@@ -157,6 +157,79 @@ class ProbeJournalTests(unittest.TestCase):
     def test_missing_record(self):
         self.assertIsNone(self.journal.get(self.name))
 
+def test_created_container_can_be_recorded_removed(self):
+    self.journal.prepare(self.name, self.image_id)
+
+    self.journal.advance(
+        self.name,
+        "prepared",
+        "create_requested",
+    )
+
+    self.journal.advance(
+        self.name,
+        "create_requested",
+        "created",
+        container_id=self.container_id,
+    )
+
+    self.journal.advance(
+        self.name,
+        "created",
+        "removed",
+    )
+
+    record = self.journal.get(self.name)
+
+    self.assertEqual(record.phase, "removed")
+    self.assertEqual(record.container_id, self.container_id)
+    self.assertEqual(self.journal.unresolved(), [])
+
+
+    def test_created_container_can_transition_directly_to_removed(self):
+        import tempfile
+        from pathlib import Path
+
+        from services.validator.docker_probe_journal import ProbeJournal
+
+        name = "neuralforge-probe-" + "a" * 24
+        image_id = "sha256:" + "b" * 64
+        container_id = "c" * 64
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "journal.sqlite3"
+
+            journal = ProbeJournal(database)
+            journal.initialize()
+            journal.prepare(name, image_id)
+
+            journal.advance(
+                name,
+                "prepared",
+                "create_requested",
+            )
+
+            journal.advance(
+                name,
+                "create_requested",
+                "created",
+                container_id=container_id,
+            )
+
+            journal.advance(
+                name,
+                "created",
+                "removed",
+            )
+
+            reopened = ProbeJournal(database)
+            record = reopened.get(name)
+
+            self.assertIsNotNone(record)
+            self.assertEqual(record.phase, "removed")
+            self.assertEqual(record.container_id, container_id)
+            self.assertEqual(reopened.unresolved(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

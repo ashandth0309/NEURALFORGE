@@ -56,6 +56,8 @@ def run_fixed_docker_probe(
     The optional journal preserves existing mock-test
     compatibility. Production integration must require it.
     """
+    if journal is None:
+        raise RuntimeError("docker_probe_journal_required")
 
     identity = inspect_approved_image(
         policy,
@@ -403,7 +405,7 @@ def run_fixed_docker_probe(
             # A successful removal should only be
             # recorded from an appropriate journal phase.
             if journal is not None:
-                if journal_phase in ("verified", "started"):
+                if journal_phase in ("created", "verified", "started"):
                     try:
                         advance_journal(
                             journal_phase,

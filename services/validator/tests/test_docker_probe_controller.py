@@ -5,6 +5,10 @@ import copy
 import json
 import subprocess
 import unittest
+import tempfile
+from pathlib import Path
+
+from services.validator.docker_probe_journal import ProbeJournal
 from unittest.mock import patch
 
 from services.validator.docker_probe_commands import PROBE_SCRIPT
@@ -89,6 +93,14 @@ class DockerProbeControllerTests(unittest.TestCase):
             "pids": "64",
         }
 
+        self.journal_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.journal_directory.cleanup)
+
+        self.journal = ProbeJournal(
+            Path(self.journal_directory.name) / "probes.sqlite3"
+        )
+        self.journal.initialize()
+
     @staticmethod
     def result(output=b"", returncode=0):
         return subprocess.CompletedProcess(
@@ -141,6 +153,7 @@ class DockerProbeControllerTests(unittest.TestCase):
                     self.policy,
                     self.approved,
                     self.image_id,
+                    journal=self.journal,
                 )
                 return evidence, invoke.call_args_list
             finally:
@@ -998,6 +1011,26 @@ class DockerProbeControllerTests(unittest.TestCase):
             self.assertEqual(record.phase, "removed")
             self.assertEqual(reopened.unresolved(), [])
 
+    def test_rejects_missing_journal_before_any_docker_operation(self):
+        with patch(
+            "services.validator.docker_probe_controller."
+            "inspect_approved_image",
+        ) as inspect_image, patch(
+            "services.validator.docker_probe_controller."
+            "run_bounded",
+        ) as docker:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "docker_probe_journal_required",
+            ):
+                run_fixed_docker_probe(
+                    self.policy,
+                    self.approved,
+                    self.image_id,
+                )
+
+        inspect_image.assert_not_called()
+        docker.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
