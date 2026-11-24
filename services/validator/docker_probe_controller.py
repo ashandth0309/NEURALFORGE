@@ -108,16 +108,20 @@ def run_fixed_docker_probe(
 
     container_id = None
     create_attempted = False
-    create_timed_out = False
+    create_outcome_uncertain = False
 
     try:
         create_attempted = True
 
+
         try:
             created = invoke(create)
-        except BoundedProcessTimeout:
-            create_timed_out = True
+        except (BoundedProcessTimeout, OSError):
+            # The Docker daemon may have received the
+            # create request even if the CLI failed.
+            create_outcome_uncertain = True
             raise
+
 
         if created.returncode != 0:
             raise RuntimeError(
@@ -267,7 +271,8 @@ def run_fixed_docker_probe(
             # after the corresponding CLI times out.
             # Cleanup attempts cannot eliminate that
             # uncertainty in the current architecture.
-            if create_timed_out:
+
+            if create_outcome_uncertain:
                 raise RuntimeError(
                     "docker_probe_cleanup_unconfirmed"
                 )

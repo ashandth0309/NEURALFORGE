@@ -261,7 +261,7 @@ class DockerProbeControllerTests(unittest.TestCase):
         ):
             self.invoke_probe(responses)
 
-    
+
     def test_reports_uncertain_cleanup_after_create_timeout(self):
         from services.validator.bounded_capture import (
             BoundedProcessTimeout,
@@ -332,6 +332,19 @@ class DockerProbeControllerTests(unittest.TestCase):
     def test_rejects_cleanup_cli_exception(self):
         responses = self.responses()
         responses[4] = OSError("Docker CLI unavailable")
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "docker_probe_cleanup_unconfirmed",
+        ):
+            self.invoke_probe(responses)
+
+    def test_reports_uncertain_cleanup_after_create_error(self):
+        responses = [
+            OSError("Docker connection interrupted"),
+            self.result(),
+            self.result(),
+        ]
 
         with self.assertRaisesRegex(
             RuntimeError,
