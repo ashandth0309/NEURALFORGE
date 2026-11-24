@@ -9,6 +9,7 @@ Does not provide a complete process-tree sandbox.
 
 import subprocess
 import threading
+import time
 
 
 class BoundedOutputError(RuntimeError):
@@ -30,6 +31,9 @@ def run_bounded(
 
     Stderr is discarded to avoid creating a second
     unbounded output channel.
+
+    The timeout applies to stdout reading and the normal
+    process-exit wait using one shared deadline.
     """
 
     if not command or not all(
@@ -44,6 +48,10 @@ def run_bounded(
     if max_output_bytes <= 0:
         raise ValueError("Invalid output limit")
 
+    # A single deadline shared by output reading and
+    # waiting for the subprocess to exit.
+    deadline = time.monotonic() + timeout_seconds
+
     process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
@@ -56,6 +64,7 @@ def run_bounded(
 
     chunks = []
     captured_bytes = 0
+
     state = {
         "oversized": False,
         "error": None,
@@ -94,7 +103,15 @@ def run_bounded(
 
     try:
         worker.start()
-        worker.join(timeout_seconds)
+
+        # Wait for the reader using the remaining time
+        # from the original deadline.
+        remaining = max(
+            0.0,
+            deadline - time.monotonic(),
+        )
+
+        worker.join(remaining)
 
         if worker.is_alive():
             raise BoundedProcessTimeout(
@@ -111,8 +128,17 @@ def run_bounded(
                 "subprocess_output_read_failed"
             ) from state["error"]
 
+        # Do not grant an extra two seconds to the
+        # process-exit wait.
+        remaining = max(
+            0.0,
+            deadline - time.monotonic(),
+        )
+
         try:
-            returncode = process.wait(timeout=2)
+            returncode = process.wait(
+                timeout=remaining
+            )
         except subprocess.TimeoutExpired as exc:
             raise BoundedProcessTimeout(
                 "subprocess_timeout"
@@ -126,6 +152,7 @@ def run_bounded(
         )
 
     finally:
+        # Terminate the direct child if it is still running.
         if process.poll() is None:
             process.kill()
 

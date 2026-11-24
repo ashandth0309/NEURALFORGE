@@ -4,8 +4,9 @@
 import os
 import sys
 import unittest
+import time
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from services.validator.bounded_capture import (
     BoundedOutputError,
@@ -180,6 +181,53 @@ class BoundedCaptureTests(unittest.TestCase):
             b"environment_verified",
         )
 
+    def test_timeout_covers_process_exit_wait(self):
+        start = time.monotonic()
+
+        with self.assertRaises(BoundedProcessTimeout):
+            self.run_command(
+                "import os,sys,time; "
+                "sys.stdout.write('READY'); "
+                "sys.stdout.flush(); "
+                "os.close(sys.stdout.fileno()); "
+                "time.sleep(5)",
+                timeout_seconds=0.4,
+            )
+
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 1.5)
+
+
+    def test_process_wait_uses_remaining_deadline(self):
+        process = MagicMock()
+
+        # Simulate stdout reaching EOF immediately.
+        process.stdout.read1.return_value = b""
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+
+        with patch(
+            "services.validator.bounded_capture."
+            "subprocess.Popen",
+            return_value=process,
+        ):
+            result = run_bounded(
+                ["trusted-test-command"],
+                env={},
+                timeout_seconds=0.4,
+                max_output_bytes=1024,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        process.wait.assert_called()
+
+        # The process-exit wait must not receive more
+        # time than the original overall deadline.
+        first_wait = process.wait.call_args_list[0]
+        wait_timeout = first_wait.kwargs["timeout"]
+
+        self.assertLessEqual(wait_timeout, 0.4 + 1e-9)
+        self.assertGreaterEqual(wait_timeout, 0)
 
 
 if __name__ == "__main__":
