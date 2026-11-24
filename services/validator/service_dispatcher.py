@@ -7,7 +7,9 @@ until a separate service security boundary exists.
 """
 
 import json
-
+from services.validator.service_response import (
+    validate_recovery_report,
+)
 from services.validator.service_contract import (
     ALLOWED_OPERATION,
     parse_service_request,
@@ -31,15 +33,7 @@ def dispatch_service_request(payload: bytes) -> bytes:
     try:
         report = inspect_persistent_recovery()
 
-        if (
-            not isinstance(report, dict)
-            or report.get("report_type")
-            != "docker_probe_recovery"
-            or report.get("read_only") is not True
-            or report.get("automatic_cleanup_allowed")
-            is not False
-        ):
-            raise RuntimeError("invalid_recovery_report")
+        validate_recovery_report(report)
 
         response = {
             "version": 1,
