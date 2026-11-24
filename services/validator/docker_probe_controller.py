@@ -30,6 +30,7 @@ from services.validator.docker_probe_commands import (
 from services.validator.docker_probe_identity import (
     verify_probe_container,
 )
+from services.validator.docker_probe_journal import ProbeJournal
 from services.validator.isolation import IsolationPolicy
 from services.validator.runtime_probe import parse_runtime_probe
 
@@ -44,11 +45,16 @@ def run_fixed_docker_probe(
     policy: IsolationPolicy,
     approved_images: frozenset[str],
     expected_image_id: str,
+    *,
+    journal: ProbeJournal | None = None,
 ):
-    """Perform a fixed probe with explicit cleanup checks.
+    """Run the fixed diagnostic with conservative cleanup.
 
-    The returned evidence represents observed probe behavior.
-    It is not an authorization token or security attestation.
+    Journal records reflect controller observations.
+    They are not independent Docker security attestations.
+
+    The optional journal preserves existing mock-test
+    compatibility. Production integration must require it.
     """
 
     identity = inspect_approved_image(
@@ -63,6 +69,54 @@ def run_fixed_docker_probe(
         raise RuntimeError("docker_unavailable")
 
     name = "neuralforge-probe-" + secrets.token_hex(12)
+
+    journal_phase = None
+
+    def advance_journal(expected_phase, next_phase, **kwargs):
+        nonlocal journal_phase
+
+        if journal is None:
+            return
+
+        journal.advance(
+            name,
+            expected_phase,
+            next_phase,
+            **kwargs,
+        )
+
+        # Change local state only after the database
+        # transaction completes successfully.
+        journal_phase = next_phase
+
+    def record_uncertain():
+        """Persist unresolved status, failing closed on errors."""
+
+        if journal is None:
+            return
+
+        if journal_phase in (
+            None,
+            "cleanup_unconfirmed",
+            "removed",
+        ):
+            return
+
+        try:
+            advance_journal(
+                journal_phase,
+                "cleanup_unconfirmed",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "docker_probe_journal_unconfirmed"
+            ) from exc
+
+    # The initial record must exist before Docker
+    # creation can be requested.
+    if journal is not None:
+        journal.prepare(name, identity.image_id)
+        journal_phase = "prepared"
 
     create, inspect, start, cleanup = build_probe_commands(
         policy=policy,
@@ -113,19 +167,23 @@ def run_fixed_docker_probe(
     create_outcome_uncertain = False
 
     try:
-        create_attempted = True
+        # Persist intent before contacting Docker.
+        if journal is not None:
+            advance_journal(
+                "prepared",
+                "create_requested",
+            )
 
+        create_attempted = True
 
         try:
             created = invoke(create)
         except (BoundedProcessTimeout, OSError):
-            # The Docker daemon may have received the
-            # create request even if the CLI failed.
             create_outcome_uncertain = True
             raise
 
-
         if created.returncode != 0:
+            create_outcome_uncertain = True
             raise RuntimeError(
                 "docker_probe_create_failed"
             )
@@ -135,19 +193,29 @@ def run_fixed_docker_probe(
                 "ascii"
             ).strip()
         except UnicodeError as exc:
+            create_outcome_uncertain = True
             raise RuntimeError(
                 "docker_probe_invalid_container_id"
             ) from exc
 
         if CONTAINER_ID_PATTERN.fullmatch(candidate) is None:
+            create_outcome_uncertain = True
             raise RuntimeError(
                 "docker_probe_invalid_container_id"
             )
 
         container_id = candidate
 
-        # Use the Docker container ID instead of
-        # its name for subsequent operations.
+        # Persist the Docker ID before inspection.
+        if journal is not None:
+            advance_journal(
+                "create_requested",
+                "created",
+                container_id=container_id,
+            )
+
+        # Use the exact container ID for all
+        # subsequent Docker lifecycle operations.
         inspect_id = (
             *inspect[:-1],
             container_id,
@@ -158,17 +226,10 @@ def run_fixed_docker_probe(
             container_id,
         )
 
-        # Verify the stopped container's identity
-        # and requested isolation configuration.
-
         metadata = inspect_metadata(inspect_id)
 
-        # Establish ownership before any automatic
-        # force-removal operation is permitted.
-
-        # Require the exact container ID, name,
-        # and ownership label before starting or
-        # force-removing this probe.
+        # Establish ownership before either starting
+        # or force-removing the container.
         config = metadata.get("Config")
 
         labels = (
@@ -189,15 +250,29 @@ def run_fixed_docker_probe(
 
         ownership_verified = True
 
-
+        # Confirm the fixed diagnostic command and
+        # the complete required isolation policy.
         verify_probe_container(
-
             metadata,
             policy=policy,
             expected_image_id=identity.image_id,
             expected_name=name,
             expected_container_id=container_id,
         )
+
+        if journal is not None:
+            advance_journal(
+                "created",
+                "verified",
+            )
+
+        # This phase means start was REQUESTED,
+        # not that execution has been confirmed.
+        if journal is not None:
+            advance_journal(
+                "verified",
+                "started",
+            )
 
         # Execute only the fixed diagnostic.
         started = invoke(
@@ -210,15 +285,32 @@ def run_fixed_docker_probe(
                 "docker_probe_start_failed"
             )
 
-        # Inspect the completed container.
+        # Inspect Docker's reported final state.
         finished = inspect_metadata(inspect_id)
 
         if (
             finished.get("Id") != container_id
             or finished.get("Image") != identity.image_id
+            or finished.get("Name") != "/" + name
         ):
             raise RuntimeError(
                 "docker_probe_identity_changed"
+            )
+
+        finished_config = finished.get("Config")
+
+        finished_labels = (
+            finished_config.get("Labels")
+            if isinstance(finished_config, dict)
+            else None
+        )
+
+        if (
+            not isinstance(finished_labels, dict)
+            or finished_labels.get(PROBE_LABEL_KEY) != name
+        ):
+            raise RuntimeError(
+                "docker_probe_ownership_changed"
             )
 
         state = finished.get("State")
@@ -234,7 +326,7 @@ def run_fixed_docker_probe(
                 "docker_probe_exit_failed"
             )
 
-        # Parse and validate observed security controls.
+        # Runtime observations must match policy.
         evidence = parse_runtime_probe(
             started.stdout,
             policy,
@@ -242,16 +334,13 @@ def run_fixed_docker_probe(
 
         return evidence
 
-
     finally:
         if create_attempted:
-            # Never force-remove a container until both
-            # its exact ID and generated name are verified.
-            #
-            # If creation failed or inspection was unavailable,
-            # ownership remains uncertain. A separate recovery
-            # process must reconcile that container safely.
+            # Never delete a container whose ownership
+            # was not verified.
             if not ownership_verified:
+                record_uncertain()
+
                 raise RuntimeError(
                     "docker_probe_cleanup_unconfirmed"
                 )
@@ -269,8 +358,8 @@ def run_fixed_docker_probe(
                         "docker_probe_remove_failed"
                     )
 
-                # Verify Docker responds successfully and
-                # does not list the exact container ID.
+                # Confirm Docker can answer a query and
+                # currently does not list this exact ID.
                 list_command = (
                     executable,
                     "--context",
@@ -295,13 +384,38 @@ def run_fixed_docker_probe(
                     )
 
             except Exception as exc:
+                record_uncertain()
+
                 raise RuntimeError(
                     "docker_probe_cleanup_unconfirmed"
                 ) from exc
 
-            # Do not report success after any ambiguous
-            # Docker creation outcome.
+            # A previously ambiguous create cannot
+            # be retroactively declared safe merely
+            # because one listing is empty.
             if create_outcome_uncertain:
+                record_uncertain()
+
                 raise RuntimeError(
                     "docker_probe_cleanup_unconfirmed"
                 )
+
+            # A successful removal should only be
+            # recorded from an appropriate journal phase.
+            if journal is not None:
+                if journal_phase in ("verified", "started"):
+                    try:
+                        advance_journal(
+                            journal_phase,
+                            "removed",
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "docker_probe_journal_unconfirmed"
+                        ) from exc
+                else:
+                    record_uncertain()
+
+                    raise RuntimeError(
+                        "docker_probe_cleanup_unconfirmed"
+                    )
