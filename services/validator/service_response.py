@@ -4,6 +4,14 @@
 Pure data validation. No filesystem or Docker operations.
 """
 
+from services.validator.docker_probe_commands import NAME_PATTERN
+from services.validator.docker_probe_journal import (
+    CONTAINER_ID_PATTERN,
+    PHASES,
+)
+from services.validator.image_identity import DIGEST_PATTERN
+
+
 VALID_DISCOVERY_STATUSES = frozenset({
     "present_owned",
     "absent_at_check",
@@ -58,8 +66,11 @@ def validate_recovery_report(report: object) -> None:
         raise ValueError("invalid_recovery_report")
 
     if "docker_available" in report:
-        if report["docker_available"] is not None and (
-            type(report["docker_available"]) is not bool
+        docker_available = report["docker_available"]
+
+        if (
+            docker_available is not None
+            and type(docker_available) is not bool
         ):
             raise ValueError("invalid_recovery_report")
 
@@ -83,6 +94,7 @@ def validate_recovery_report(report: object) -> None:
         ):
             raise ValueError("invalid_recovery_record")
 
+        # Validate required string types first.
         if (
             type(record["name"]) is not str
             or not record["name"]
@@ -93,16 +105,38 @@ def validate_recovery_report(report: object) -> None:
         ):
             raise ValueError("invalid_recovery_record")
 
+        # Validate probe identity and lifecycle state.
+        if (
+            NAME_PATTERN.fullmatch(record["name"]) is None
+            or record["phase"] not in PHASES
+            or record["phase"] == "removed"
+            or DIGEST_PATTERN.fullmatch(
+                record["expected_image_id"]
+            ) is None
+        ):
+            raise ValueError("invalid_recovery_record")
+
+        # Validate optional container identifiers.
+        # Check the type before calling fullmatch().
         for field in (
             "recorded_container_id",
             "discovered_container_id",
         ):
-            if record[field] is not None and (
-                type(record[field]) is not str
-                or not record[field]
-            ):
-                raise ValueError("invalid_recovery_record")
+            identifier = record[field]
 
+            if identifier is not None:
+                if (
+                    type(identifier) is not str
+                    or CONTAINER_ID_PATTERN.fullmatch(
+                        identifier
+                    ) is None
+                ):
+                    raise ValueError(
+                        "invalid_recovery_record"
+                    )
+
+        # Recovery results never authorize automatic
+        # cleanup or retrying an unresolved probe.
         if (
             type(record["discovery_status"]) is not str
             or record["discovery_status"]
@@ -113,8 +147,25 @@ def validate_recovery_report(report: object) -> None:
         ):
             raise ValueError("invalid_recovery_record")
 
+        # Only verified ownership discovery may include
+        # a discovered container identifier.
         if (
             record["discovery_status"] != "present_owned"
             and record["discovered_container_id"] is not None
         ):
             raise ValueError("invalid_recovery_record")
+
+        # A present-owned result requires a discovered ID.
+        # If a previously recorded ID exists, it must match.
+        if record["discovery_status"] == "present_owned":
+            discovered = record["discovered_container_id"]
+            recorded = record["recorded_container_id"]
+
+            if discovered is None:
+                raise ValueError("invalid_recovery_record")
+
+            if (
+                recorded is not None
+                and discovered != recorded
+            ):
+                raise ValueError("invalid_recovery_record")
